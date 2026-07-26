@@ -28,7 +28,7 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<{ username?: string, password?: string }>({})
   const isChinese = i18n.resolvedLanguage?.split('-')[0] === 'zh'
-  const { data: authMethods } = useAuthMethods(search.returnTo)
+  const { data: authMethods, isLoading: areAuthMethodsLoading } = useAuthMethods(search.returnTo)
 
   const returnTo = search.returnTo && search.returnTo.startsWith('/') ? search.returnTo : '/dashboard'
   const disabledMessage = search.reason === 'accountDisabled' ? t('apiError.auth.accountDisabled') : null
@@ -37,6 +37,7 @@ export function LoginPage() {
       method.methodType === 'DIRECT_PASSWORD' && method.provider === directAuthConfig.provider)
     : undefined
   const bootstrapMethod = authMethods?.find((method) => method.methodType === 'SESSION_BOOTSTRAP')
+  const localPasswordEnabled = authMethods?.some((method) => method.methodType === 'PASSWORD') ?? false
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -88,7 +89,8 @@ export function LoginPage() {
               onAuthenticated={() => navigate({ to: returnTo })}
             />
 
-            <Tabs defaultValue="password" className="space-y-6">
+            {!areAuthMethodsLoading && localPasswordEnabled ? (
+              <Tabs defaultValue="password" className="space-y-6">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="password">{t('login.tabPassword')}</TabsTrigger>
                 <TabsTrigger value="oauth">{t('login.tabOAuth')}</TabsTrigger>
@@ -185,7 +187,15 @@ export function LoginPage() {
                 </p>
                 <LoginButton returnTo={returnTo} />
               </TabsContent>
-            </Tabs>
+              </Tabs>
+            ) : !areAuthMethodsLoading ? (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  {t('login.oauthHint')}
+                </p>
+                <LoginButton returnTo={returnTo} />
+              </div>
+            ) : null}
           </div>
         </div>
 
