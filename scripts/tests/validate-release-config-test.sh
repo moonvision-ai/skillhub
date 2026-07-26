@@ -80,6 +80,11 @@ short_env="$tmp/short.env"
 write_env "$short_env" "too-short"
 expect_fail "$short_env" "SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET must be at least 32 characters"
 
+invalid_local_ui_env="$tmp/invalid-local-ui.env"
+write_env "$invalid_local_ui_env" "release-download-secret-32-bytes-minimum"
+printf '%s\n' 'SKILLHUB_AUTH_LOCAL_UI_ENABLED=sometimes' >>"$invalid_local_ui_env"
+expect_fail "$invalid_local_ui_env" "SKILLHUB_AUTH_LOCAL_UI_ENABLED must be true or false"
+
 draft_env="$tmp/draft.env"
 while IFS= read -r line || [[ -n "$line" ]]; do
   case "$line" in

@@ -153,6 +153,7 @@ validate_boolean SESSION_COOKIE_SECURE
 validate_boolean BOOTSTRAP_ADMIN_ENABLED
 validate_boolean SKILLHUB_STORAGE_S3_FORCE_PATH_STYLE
 validate_boolean SKILLHUB_STORAGE_S3_AUTO_CREATE_BUCKET
+validate_boolean SKILLHUB_AUTH_LOCAL_UI_ENABLED
 
 validate_port POSTGRES_PORT
 validate_port REDIS_PORT

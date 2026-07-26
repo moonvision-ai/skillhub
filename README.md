@@ -292,6 +292,23 @@ Recommended production baseline:
 If the GHCR package remains private, run `docker login ghcr.io` before
 `docker compose up -d`.
 
+### Authentication Entry Policy
+
+The server can hide local-account controls and restrict which configured OAuth
+providers may be used:
+
+```bash
+SKILLHUB_AUTH_LOCAL_UI_ENABLED=false
+SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS=oidc
+```
+
+Both settings are backward compatible: local UI defaults to enabled and a blank
+OAuth allowlist permits every configured provider. Disabling local UI removes
+password, registration, and reset links from the Web login page but keeps local
+authentication APIs available for a controlled emergency path. A non-empty OAuth
+allowlist filters discovery and blocks direct authorization URLs for providers
+that are not listed.
+
 ### Upload Allowlist Override
 
 Skill package upload validation uses the default extension allowlist from

@@ -251,9 +251,24 @@ STORAGE_S3_BUCKET=skillhub
 # 认证
 AUTH_JWT_SECRET=your-secret-key
 AUTH_SESSION_TIMEOUT=30m
+
+# 认证入口策略（默认显示本地登录，并允许全部已配置的 OAuth Provider）
+SKILLHUB_AUTH_LOCAL_UI_ENABLED=true
+SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS=
 ```
 
 完整配置参考请查看 [`application.yml`](./server/skillhub-app/src/main/resources/application.yml)。
+
+如需只显示 Authelia（registration id 为 `oidc`），可以设置：
+
+```bash
+SKILLHUB_AUTH_LOCAL_UI_ENABLED=false
+SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS=oidc
+```
+
+关闭本地登录 UI 只会隐藏密码、注册和找回密码入口，本地认证 API 仍可作为受控的
+应急通道。OAuth 白名单非空时还会阻止直接访问未列入白名单的
+`/oauth2/authorization/{provider}`；留空则保持现有行为，允许所有已配置 Provider。
 
 ### 上传白名单覆盖
 

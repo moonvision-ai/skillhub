@@ -182,6 +182,27 @@ docker compose --env-file .env.release -f compose.release.yml up -d
 - 前端开关打开之前，后端仍必须同步打开 `skillhub.auth.session-bootstrap.enabled=true`
 - 前后端任一侧未开启，都不会破坏原有登录方式；只会使该兼容入口不可用或不显示
 
+认证入口策略由后端统一控制：
+
+- `SKILLHUB_AUTH_LOCAL_UI_ENABLED`
+  - 默认 `true`
+  - 设为 `false` 后，登录页不显示本地密码、注册和找回密码入口
+  - 只影响 Web 展示；本地登录相关 API 仍可作为受控的应急通道
+- `SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS`
+  - 使用逗号分隔 registration id，例如 `oidc,github`
+  - 默认留空，表示允许所有已经配置的 OAuth Provider
+  - 非空时同时过滤认证目录并阻止直接访问未允许的
+    `/oauth2/authorization/{provider}`
+
+仅允许 Authelia（registration id 为 `oidc`）的示例：
+
+```bash
+SKILLHUB_AUTH_LOCAL_UI_ENABLED=false
+SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS=oidc
+```
+
+前端不维护第二份 Provider 白名单，而是以 `/api/v1/auth/methods` 返回的目录为准。
+
 开发环境：
 
 - 本地命令与 `docker-compose.yml`
