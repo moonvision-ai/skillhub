@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,10 +16,28 @@ import static org.mockito.Mockito.mock;
 class OAuth2AuthorizationRequestResolverTest {
 
     private SkillHubOAuth2AuthorizationRequestResolver resolver;
+    private ClientRegistrationRepository clientRegistrationRepository;
+    private OAuthLoginFlowService oauthLoginFlowService;
 
     @BeforeEach
     void setUp() {
-        ClientRegistration github = ClientRegistration.withRegistrationId("github")
+        ClientRegistration github = clientRegistration("github");
+        ClientRegistration gitlab = clientRegistration("gitlab");
+        oauthLoginFlowService = new OAuthLoginFlowService(
+                java.util.List.of(),
+                mock(AccessPolicy.class),
+                mock(IdentityBindingService.class)
+        );
+        clientRegistrationRepository = new InMemoryClientRegistrationRepository(github, gitlab);
+        resolver = new SkillHubOAuth2AuthorizationRequestResolver(
+                clientRegistrationRepository,
+                oauthLoginFlowService,
+                new OAuthProviderPolicy()
+        );
+    }
+
+    private ClientRegistration clientRegistration(String registrationId) {
+        return ClientRegistration.withRegistrationId(registrationId)
                 .clientId("client")
                 .clientSecret("secret")
                 .authorizationUri("https://example.test/oauth/authorize")
@@ -28,17 +47,8 @@ class OAuth2AuthorizationRequestResolverTest {
                 .userNameAttributeName("id")
                 .authorizationGrantType(org.springframework.security.oauth2.core.AuthorizationGrantType.AUTHORIZATION_CODE)
                 .scope("read:user")
-                .clientName("GitHub")
+                .clientName(registrationId)
                 .build();
-        OAuthLoginFlowService oauthLoginFlowService = new OAuthLoginFlowService(
-                java.util.List.of(),
-                mock(AccessPolicy.class),
-                mock(IdentityBindingService.class)
-        );
-        resolver = new SkillHubOAuth2AuthorizationRequestResolver(
-                new InMemoryClientRegistrationRepository(github),
-                oauthLoginFlowService
-        );
     }
 
     @Test
@@ -64,5 +74,36 @@ class OAuth2AuthorizationRequestResolverTest {
         HttpSession session = request.getSession(false);
         assertThat(session).isNotNull();
         assertThat(session.getAttribute(OAuthLoginRedirectSupport.SESSION_RETURN_TO_ATTRIBUTE)).isNull();
+    }
+
+    @Test
+    void resolve_rejectsDisallowedExplicitProviderWithoutCreatingSession() {
+        OAuthProviderPolicy policy = new OAuthProviderPolicy();
+        policy.setAllowedProviders(java.util.List.of("github"));
+        resolver = new SkillHubOAuth2AuthorizationRequestResolver(
+                clientRegistrationRepository,
+                oauthLoginFlowService,
+                policy
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/oauth2/authorization/gitlab");
+        request.setParameter("returnTo", "/dashboard");
+
+        assertThat(resolver.resolve(request, "gitlab")).isNull();
+        assertThat(request.getSession(false)).isNull();
+    }
+
+    @Test
+    void resolve_rejectsDisallowedProviderFromRequestPath() {
+        OAuthProviderPolicy policy = new OAuthProviderPolicy();
+        policy.setAllowedProviders(java.util.List.of("github"));
+        resolver = new SkillHubOAuth2AuthorizationRequestResolver(
+                clientRegistrationRepository,
+                oauthLoginFlowService,
+                policy
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/oauth2/authorization/gitlab");
+
+        assertThat(resolver.resolve(request)).isNull();
+        assertThat(request.getSession(false)).isNull();
     }
 }

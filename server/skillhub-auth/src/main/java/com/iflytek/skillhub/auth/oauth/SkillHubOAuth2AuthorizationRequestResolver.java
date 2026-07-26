@@ -14,29 +14,59 @@ import org.springframework.stereotype.Component;
 public class SkillHubOAuth2AuthorizationRequestResolver
         implements org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver {
 
+    private static final String AUTHORIZATION_REQUEST_BASE_URI = "/oauth2/authorization";
+
     private final DefaultOAuth2AuthorizationRequestResolver delegate;
     private final OAuthLoginFlowService oauthLoginFlowService;
+    private final OAuthProviderPolicy oauthProviderPolicy;
 
     public SkillHubOAuth2AuthorizationRequestResolver(ClientRegistrationRepository clientRegistrationRepository,
-                                                      OAuthLoginFlowService oauthLoginFlowService) {
+                                                      OAuthLoginFlowService oauthLoginFlowService,
+                                                      OAuthProviderPolicy oauthProviderPolicy) {
         this.delegate = new DefaultOAuth2AuthorizationRequestResolver(
                 clientRegistrationRepository,
-                "/oauth2/authorization"
+                AUTHORIZATION_REQUEST_BASE_URI
         );
         this.oauthLoginFlowService = oauthLoginFlowService;
+        this.oauthProviderPolicy = oauthProviderPolicy;
     }
 
     @Override
     public OAuth2AuthorizationRequest resolve(HttpServletRequest request) {
+        String registrationId = registrationIdFrom(request);
+        if (registrationId != null && !oauthProviderPolicy.isAllowed(registrationId)) {
+            return null;
+        }
         OAuth2AuthorizationRequest authorizationRequest = delegate.resolve(request);
-        oauthLoginFlowService.rememberReturnTo(request);
+        rememberReturnTo(request, authorizationRequest);
         return authorizationRequest;
     }
 
     @Override
     public OAuth2AuthorizationRequest resolve(HttpServletRequest request, String clientRegistrationId) {
+        if (!oauthProviderPolicy.isAllowed(clientRegistrationId)) {
+            return null;
+        }
         OAuth2AuthorizationRequest authorizationRequest = delegate.resolve(request, clientRegistrationId);
-        oauthLoginFlowService.rememberReturnTo(request);
+        rememberReturnTo(request, authorizationRequest);
         return authorizationRequest;
+    }
+
+    private void rememberReturnTo(HttpServletRequest request,
+                                  OAuth2AuthorizationRequest authorizationRequest) {
+        if (authorizationRequest != null) {
+            oauthLoginFlowService.rememberReturnTo(request);
+        }
+    }
+
+    private String registrationIdFrom(HttpServletRequest request) {
+        String requestUri = request.getRequestURI();
+        String prefix = AUTHORIZATION_REQUEST_BASE_URI + "/";
+        if (requestUri == null || !requestUri.startsWith(prefix)) {
+            return null;
+        }
+        String registrationId = requestUri.substring(prefix.length());
+        int nextSlash = registrationId.indexOf('/');
+        return nextSlash >= 0 ? registrationId.substring(0, nextSlash) : registrationId;
     }
 }

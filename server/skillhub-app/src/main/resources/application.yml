@@ -98,6 +98,8 @@ skillhub:
   auth:
     mock:
       enabled: ${SKILLHUB_AUTH_MOCK_ENABLED:false}
+    oauth:
+      allowed-providers: ${SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS:}
     direct:
       enabled: ${SKILLHUB_AUTH_DIRECT_ENABLED:false}
     session-bootstrap:
