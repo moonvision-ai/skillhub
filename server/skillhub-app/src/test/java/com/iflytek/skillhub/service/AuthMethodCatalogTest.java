@@ -6,15 +6,55 @@ import static org.mockito.Mockito.mock;
 import com.iflytek.skillhub.auth.bootstrap.PassiveSessionAuthenticator;
 import com.iflytek.skillhub.auth.direct.DirectAuthProvider;
 import com.iflytek.skillhub.auth.direct.DirectAuthRequest;
+import com.iflytek.skillhub.auth.oauth.OAuthProviderPolicy;
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
 import com.iflytek.skillhub.config.AuthSessionBootstrapProperties;
 import com.iflytek.skillhub.config.DirectAuthProperties;
+import com.iflytek.skillhub.config.LocalAuthUiProperties;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties;
 
 class AuthMethodCatalogTest {
+
+    @Test
+    void listMethodsShouldHideLocalLoginAndDisallowedOAuthProviders() {
+        OAuth2ClientProperties oauthProperties = oauthProperties();
+        LocalAuthUiProperties localAuthUiProperties = new LocalAuthUiProperties();
+        localAuthUiProperties.setEnabled(false);
+        OAuthProviderPolicy oauthProviderPolicy = new OAuthProviderPolicy();
+        oauthProviderPolicy.setAllowedProviders(List.of(" OIDC "));
+
+        AuthMethodCatalog catalog = new AuthMethodCatalog(
+            oauthProperties,
+            new DirectAuthProperties(),
+            new AuthSessionBootstrapProperties(),
+            localAuthUiProperties,
+            oauthProviderPolicy,
+            List.of(),
+            List.of()
+        );
+
+        assertThat(catalog.listMethods(null))
+            .extracting(method -> method.id())
+            .contains("oauth-oidc")
+            .doesNotContain("local-password", "oauth-github");
+        assertThat(catalog.listOAuthProviders(null))
+            .extracting(provider -> provider.id())
+            .containsExactly("oidc");
+    }
+
+    private OAuth2ClientProperties oauthProperties() {
+        OAuth2ClientProperties properties = new OAuth2ClientProperties();
+        OAuth2ClientProperties.Registration github = new OAuth2ClientProperties.Registration();
+        github.setClientName("GitHub");
+        OAuth2ClientProperties.Registration oidc = new OAuth2ClientProperties.Registration();
+        oidc.setClientName("Authelia");
+        properties.getRegistration().put("github", github);
+        properties.getRegistration().put("oidc", oidc);
+        return properties;
+    }
 
     @Test
     void listMethodsShouldUseProviderDisplayNamesForCompatibleAuthMethods() {
@@ -62,6 +102,8 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
+            enabledLocalAuthUiProperties(),
+            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );
@@ -111,6 +153,8 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
+            enabledLocalAuthUiProperties(),
+            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );
@@ -121,5 +165,9 @@ class AuthMethodCatalogTest {
                 "direct-private-sso:private-sso",
                 "bootstrap-private-sso:private-sso"
             );
+    }
+
+    private LocalAuthUiProperties enabledLocalAuthUiProperties() {
+        return new LocalAuthUiProperties();
     }
 }
