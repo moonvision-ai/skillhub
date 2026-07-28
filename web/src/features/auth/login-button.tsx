@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { KeyRound } from 'lucide-react'
 import { Button } from '@/shared/ui/button'
 import { useAuthMethods } from './use-auth-methods'
 
@@ -11,6 +12,12 @@ interface LoginButtonProps {
  */
 function OAuthIcon({ provider }: { provider: string }) {
   const normalizedProvider = provider.toLowerCase()
+  const hasBundledLogo = normalizedProvider === 'github' || normalizedProvider === 'gitlab'
+
+  if (!hasBundledLogo) {
+    return <KeyRound aria-hidden="true" className="w-5 h-5 mr-3" />
+  }
+
   return (
     <img
       src={`/${normalizedProvider}-logo.svg`}
@@ -58,4 +65,3 @@ export function LoginButton({ returnTo }: LoginButtonProps) {
     </div>
   )
 }
-
