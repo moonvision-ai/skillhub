@@ -308,7 +308,10 @@
     "windowsUrlBug": "检测到 Windows 系统的已知问题：浏览器打开的 URL 不完整。请从 CLI 输出中复制完整的 URL（以 'Opening browser:' 开头的那一行），然后粘贴到浏览器地址栏中。",
     "tokenCreationFailed": "令牌创建失败",
     "loginRequired": "请先登录以授权 CLI 访问",
-    "goToLogin": "前往登录"
+    "goToLogin": "前往登录",
+    "deleteConsentTitle": "允许远程删除技能？",
+    "deleteConsentDescription": "MoonViz CLI 正在申请从 SkillHub 永久删除技能的权限。仅在你需要使用远程删除时继续。",
+    "deleteConsentConfirm": "允许删除并继续"
   },
   "dashboard": {
     "title": "Dashboard",

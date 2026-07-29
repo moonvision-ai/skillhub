@@ -11,6 +11,7 @@ import com.iflytek.skillhub.dto.TokenCreateRequest;
 import com.iflytek.skillhub.dto.TokenCreateResponse;
 import com.iflytek.skillhub.dto.TokenExpirationUpdateRequest;
 import com.iflytek.skillhub.dto.TokenSummaryResponse;
+import com.iflytek.skillhub.domain.shared.exception.DomainBadRequestException;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,6 +19,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Self-service API token management endpoints for authenticated users.
@@ -25,6 +28,11 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1/tokens")
 public class TokenController extends BaseApiController {
+
+    private static final List<String> DEFAULT_SCOPES = List.of("skill:read", "skill:publish");
+    private static final Set<String> ALLOWED_SCOPES = Set.of(
+            "skill:read", "skill:publish", "skill:delete", "token:manage"
+    );
 
     private final ApiTokenService apiTokenService;
     private final ObjectMapper objectMapper;
@@ -40,14 +48,17 @@ public class TokenController extends BaseApiController {
             @AuthenticationPrincipal PlatformPrincipal principal,
             @Valid @RequestBody TokenCreateRequest request) {
         String scopeJson;
-        if (request.scopes() == null || request.scopes().isEmpty()) {
-            scopeJson = "[\"skill:read\",\"skill:publish\"]";
-        } else {
-            try {
-                scopeJson = objectMapper.writeValueAsString(request.scopes());
-            } catch (JsonProcessingException e) {
-                scopeJson = "[\"skill:read\",\"skill:publish\"]";
-            }
+        List<String> requestedScopes = request.scopes() == null || request.scopes().isEmpty()
+                ? DEFAULT_SCOPES
+                : request.scopes();
+        if (requestedScopes.stream().anyMatch(scope -> scope == null || scope.isBlank() || !ALLOWED_SCOPES.contains(scope))) {
+            throw new DomainBadRequestException("validation.token.scope.invalid");
+        }
+        var scopes = List.copyOf(new LinkedHashSet<>(requestedScopes));
+        try {
+            scopeJson = objectMapper.writeValueAsString(scopes);
+        } catch (JsonProcessingException e) {
+            throw new DomainBadRequestException("validation.token.scope.invalid");
         }
 
         var result = apiTokenService.rotateToken(principal.userId(), request.name(), scopeJson, request.expiresAt());

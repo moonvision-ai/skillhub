@@ -6,6 +6,7 @@ import { Button } from '@/shared/ui/button'
 import { getCurrentUser, tokenApi } from '@/api/client'
 import type { User } from '@/api/types'
 import { ORIGINAL_URL_SEARCH } from '@/app/router'
+import { requestedCliTokenScopes, requiresDeleteConsent } from '@/features/auth/cli-auth-request'
 
 // Parse the original URL params captured before TanStack Router rewrites
 const ORIGINAL_PARAMS = new URLSearchParams(ORIGINAL_URL_SEARCH)
@@ -39,7 +40,7 @@ export function CliAuthPage() {
   const navigate = useNavigate()
 
   const [user, setUser] = useState<User | null | undefined>(undefined)
-  const [status, setStatus] = useState<'validating' | 'creating' | 'redirecting' | 'error'>('validating')
+  const [status, setStatus] = useState<'validating' | 'consent' | 'creating' | 'redirecting' | 'error'>('validating')
   const [errorMessage, setErrorMessage] = useState<string>('')
   const [token, setToken] = useState<string>('')
 
@@ -49,13 +50,8 @@ export function CliAuthPage() {
   const labelB64 = ORIGINAL_PARAMS.get('label_b64')?.trim() || undefined
   const labelPlain = ORIGINAL_PARAMS.get('label')?.trim() || undefined
   const label = decodeLabel(labelB64, labelPlain)
-
-  // Debug: log search params and raw URL
-  console.log('CLI Auth - Original search (from router.tsx):', ORIGINAL_URL_SEARCH)
-  console.log('CLI Auth - Current URL:', typeof window !== 'undefined' ? window.location.href : 'SSR')
-  console.log('CLI Auth - redirectUri:', redirectUri)
-  console.log('CLI Auth - state:', state)
-  console.log('CLI Auth - label:', label)
+  const allowDelete = ORIGINAL_PARAMS.get('allow_delete')
+  const [deleteConfirmed, setDeleteConfirmed] = useState(false)
 
   useEffect(() => {
     // Check authentication status
@@ -101,12 +97,17 @@ export function CliAuthPage() {
       return
     }
 
+    if (requiresDeleteConsent(allowDelete) && !deleteConfirmed) {
+      setStatus('consent')
+      return
+    }
+
     // Create token and redirect
     setStatus('creating')
     tokenApi
       .createToken({
         name: label,
-        scopes: ['skill:read', 'skill:publish'],
+        scopes: requestedCliTokenScopes(allowDelete),
       })
       .then((response) => {
         setToken(response.token)
@@ -128,7 +129,7 @@ export function CliAuthPage() {
         setStatus('error')
         setErrorMessage(error instanceof Error ? error.message : t('cliAuth.tokenCreationFailed'))
       })
-  }, [user, redirectUri, state, label, t])
+  }, [user, redirectUri, state, label, allowDelete, deleteConfirmed, t])
 
   if (status === 'validating') {
     return (
@@ -157,6 +158,20 @@ export function CliAuthPage() {
           </div>
           <h1 className="text-2xl font-bold font-heading">{t('cliAuth.creatingToken')}</h1>
           <p className="text-muted-foreground">{t('cliAuth.almostThere')}</p>
+        </Card>
+      </div>
+    )
+  }
+
+  if (status === 'consent') {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center p-4">
+        <Card className="w-full max-w-md p-8 space-y-6 text-center">
+          <h1 className="text-2xl font-bold font-heading">{t('cliAuth.deleteConsentTitle')}</h1>
+          <p className="text-muted-foreground">{t('cliAuth.deleteConsentDescription')}</p>
+          <Button className="w-full" onClick={() => setDeleteConfirmed(true)}>
+            {t('cliAuth.deleteConsentConfirm')}
+          </Button>
         </Card>
       </div>
     )

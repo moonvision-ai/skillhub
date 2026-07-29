@@ -25,6 +25,7 @@ import org.springframework.data.domain.PageRequest;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -53,6 +54,54 @@ class TokenControllerTest {
 
     @MockBean
     private ApiTokenService apiTokenService;
+
+    @Test
+    void create_acceptsKnownScopesAndStableDeduplicatesThem() throws Exception {
+        PlatformPrincipal principal = new PlatformPrincipal(
+                "user-42", "tester", "tester@example.com", "", "github", Set.of("USER")
+        );
+        var auth = new UsernamePasswordAuthenticationToken(
+                principal, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))
+        );
+        var token = new com.iflytek.skillhub.auth.entity.ApiToken("user-42", "cli", "sk_123456", "hash-1", "[]");
+        org.springframework.test.util.ReflectionTestUtils.setField(token, "id", 7L);
+        org.springframework.test.util.ReflectionTestUtils.setField(token, "createdAt", java.time.Instant.parse("2026-03-15T12:00:00Z"));
+
+        given(apiTokenService.rotateToken(
+                "user-42", "cli",
+                "[\"skill:publish\",\"skill:read\",\"skill:delete\",\"token:manage\"]", null
+        )).willReturn(new ApiTokenService.TokenCreateResult("sk_raw", token));
+
+        mockMvc.perform(post("/api/v1/tokens")
+                        .with(authentication(auth))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {"name":"cli","scopes":["skill:publish","skill:read","skill:publish","skill:delete","token:manage"]}
+                                """))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void create_rejectsUnknownOrBlankScopesWithoutRotatingToken() throws Exception {
+        PlatformPrincipal principal = new PlatformPrincipal(
+                "user-42", "tester", "tester@example.com", "", "github", Set.of("USER")
+        );
+        var auth = new UsernamePasswordAuthenticationToken(
+                principal, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))
+        );
+
+        mockMvc.perform(post("/api/v1/tokens")
+                        .with(authentication(auth))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {"name":"cli","scopes":["skill:read","","admin:all"]}
+                                """))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(apiTokenService);
+    }
 
     @Test
     void revoke_returns204NoContent() throws Exception {
