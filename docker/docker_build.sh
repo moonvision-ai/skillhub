@@ -3,13 +3,13 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: [SSH_USER=user] [YES=1] $0 <TAG> [BRANCH]
+Usage: [SSH_USER=user] [YES=1] $0 [BRANCH]
 
-Build and push SkillHub server and web images on the remote build host.
+Build and push SkillHub server and web images as latest on the remote build host.
 
 Examples:
-  SSH_USER=sam $0 v0.2.13 feature/configurable-auth-entry-policy
-  SSH_USER=sam YES=1 $0 v0.2.13
+  SSH_USER=sam $0 feature/configurable-auth-entry-policy
+  SSH_USER=sam YES=1 $0
 EOF
 }
 
@@ -18,18 +18,14 @@ die() {
   exit 2
 }
 
-if (( $# < 1 || $# > 2 )); then
+if (( $# > 1 )); then
   usage >&2
   exit 2
 fi
 
-TAG="$1"
-BRANCH="${2:-}"
+TAG='latest'
+BRANCH="${1:-}"
 SSH_USER="${SSH_USER:-root}"
-
-if [[ ! "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-  die "Invalid TAG: $TAG"
-fi
 
 if [[ ! "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_.-]*[$]?$ ]]; then
   die "Invalid SSH_USER: $SSH_USER"

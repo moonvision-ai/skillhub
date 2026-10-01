@@ -62,34 +62,25 @@ run_script() {
     YES=1 bash "$SCRIPT" "$@"
 }
 
-test_requires_tag() {
-  local output="$TMP_DIR/requires-tag.out"
-  if run_script >"$output" 2>&1; then
-    fail 'missing TAG should fail'
-  elif ! grep -F 'Usage:' "$output" >/dev/null; then
-    fail 'missing TAG should print usage'
-  fi
-}
-
 test_rejects_unsafe_inputs() {
   local output="$TMP_DIR/unsafe.out"
 
-  if run_script 'bad tag' >"$output" 2>&1; then
-    fail 'unsafe TAG should fail'
-  elif ! grep -F 'Invalid TAG' "$output" >/dev/null; then
-    fail 'unsafe TAG should explain the validation failure'
-  fi
-
-  if run_script valid 'bad branch' >"$output" 2>&1; then
+  if run_script 'bad branch' >"$output" 2>&1; then
     fail 'unsafe branch should fail'
   elif ! grep -F 'Invalid BRANCH' "$output" >/dev/null; then
     fail 'unsafe branch should explain the validation failure'
   fi
 
-  if SSH_USER='bad;user' run_script valid main >"$output" 2>&1; then
+  if SSH_USER='bad;user' run_script main >"$output" 2>&1; then
     fail 'unsafe SSH_USER should fail'
   elif ! grep -F 'Invalid SSH_USER' "$output" >/dev/null; then
     fail 'unsafe SSH_USER should explain the validation failure'
+  fi
+
+  if run_script main extra >"$output" 2>&1; then
+    fail 'more than one argument should fail'
+  elif ! grep -F 'Usage:' "$output" >/dev/null; then
+    fail 'too many arguments should print usage'
   fi
 }
 
@@ -98,15 +89,17 @@ test_builds_and_pushes_both_images() {
   : > "$CAPTURE_DIR/args"
   : > "$CAPTURE_DIR/stdin"
 
-  SSH_USER=sam run_script v0.2.13-auth >"$output" 2>&1 || {
+  SSH_USER=sam run_script >"$output" 2>&1 || {
     fail 'valid invocation should succeed'
     return
   }
 
   assert_contains "$CAPTURE_DIR/args" '-J sam@59.110.17.213'
   assert_contains "$CAPTURE_DIR/args" 'sam@172.17.20.220'
-  assert_contains "$CAPTURE_DIR/args" 'v0.2.13-auth'
+  assert_contains "$CAPTURE_DIR/args" 'latest'
   assert_contains "$CAPTURE_DIR/args" 'feature/configurable-auth-entry-policy'
+  assert_contains "$output" 'registry.cn-beijing.aliyuncs.com/moonvision/skillhub-server:latest'
+  assert_contains "$output" 'registry.cn-beijing.aliyuncs.com/moonvision/skillhub-web:latest'
   assert_contains "$CAPTURE_DIR/stdin" 'git@github.com:moonvision-ai/skillhub.git'
   assert_contains "$CAPTURE_DIR/stdin" 'registry.cn-beijing.aliyuncs.com/moonvision/skillhub-server'
   assert_contains "$CAPTURE_DIR/stdin" 'registry.cn-beijing.aliyuncs.com/moonvision/skillhub-web'
@@ -116,7 +109,6 @@ test_builds_and_pushes_both_images() {
   assert_contains "$CAPTURE_DIR/stdin" 'status --porcelain'
 }
 
-test_requires_tag
 test_rejects_unsafe_inputs
 test_builds_and_pushes_both_images
 
