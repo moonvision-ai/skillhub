@@ -4,7 +4,7 @@ import { afterEach } from 'vitest'
 import { describe, expect, it, vi } from 'vitest'
 
 const authMethodsFixture = vi.hoisted(() => ({
-  methods: [] as Array<{ id: string, methodType: string }>,
+  methods: [{ id: 'local-password', methodType: 'PASSWORD' }] as Array<{ id: string, methodType: string }>,
   bootstrapEnabled: false,
   directEnabled: false,
   isError: false,
@@ -82,7 +82,7 @@ import { LoginPage } from './login'
 describe('LoginPage', () => {
   afterEach(() => {
     cleanup()
-    authMethodsFixture.methods = []
+    authMethodsFixture.methods = [{ id: 'local-password', methodType: 'PASSWORD' }]
     authMethodsFixture.bootstrapEnabled = false
     authMethodsFixture.directEnabled = false
     authMethodsFixture.isError = false
@@ -103,6 +103,15 @@ describe('LoginPage', () => {
     expect(html).toContain('login.submit')
     expect(html).not.toContain('login.tabEnterprise')
     expect(html).toContain('login.register')
+  })
+
+  it('hides local password and registration when only Authelia is advertised', () => {
+    authMethodsFixture.methods = [{ id: 'oauth-oidc', methodType: 'OAUTH_REDIRECT' }]
+    const html = renderToStaticMarkup(<LoginPage />)
+
+    expect(html).not.toContain('login.submit')
+    expect(html).not.toContain('login.register')
+    expect(html).not.toContain('login.forgotPassword')
   })
 
   it('does not expose password routing details when direct login is configured', () => {

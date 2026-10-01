@@ -74,6 +74,23 @@ class OAuth2AuthorizationRequestResolverTest {
     }
 
     @Test
+    void resolve_rejectsProviderOutsideAllowlistBeforeCreatingSession() {
+        OAuthProviderPolicy policy = new OAuthProviderPolicy();
+        policy.setAllowedProviders(java.util.List.of("oidc"));
+        OAuthLoginFlowService flowService = new OAuthLoginFlowService(
+                java.util.List.of(), mock(AccessPolicy.class), mock(IdentityBindingService.class));
+        SkillHubOAuth2AuthorizationRequestResolver restricted =
+                new SkillHubOAuth2AuthorizationRequestResolver(
+                        new InMemoryClientRegistrationRepository(githubRegistration()),
+                        flowService, java.util.List.of(), policy);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/oauth2/authorization/github");
+
+        assertThat(restricted.resolve(request)).isNull();
+        assertThat(restricted.resolve(request, "github")).isNull();
+        assertThat(request.getSession(false)).isNull();
+    }
+
+    @Test
     void resolve_ignoresUnsafeReturnTo() {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/oauth2/authorization/github");
         request.setParameter("returnTo", "https://evil.example");

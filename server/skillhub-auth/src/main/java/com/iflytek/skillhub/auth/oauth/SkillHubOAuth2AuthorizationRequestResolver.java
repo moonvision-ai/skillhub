@@ -26,22 +26,31 @@ public class SkillHubOAuth2AuthorizationRequestResolver
 
     private final DefaultOAuth2AuthorizationRequestResolver delegate;
     private final OAuthLoginFlowService oauthLoginFlowService;
+    private final OAuthProviderPolicy oauthProviderPolicy;
 
     SkillHubOAuth2AuthorizationRequestResolver(ClientRegistrationRepository clientRegistrationRepository,
                                                OAuthLoginFlowService oauthLoginFlowService) {
-        this(clientRegistrationRepository, oauthLoginFlowService, List.of());
+        this(clientRegistrationRepository, oauthLoginFlowService, List.of(), new OAuthProviderPolicy());
+    }
+
+    SkillHubOAuth2AuthorizationRequestResolver(ClientRegistrationRepository clientRegistrationRepository,
+                                               OAuthLoginFlowService oauthLoginFlowService,
+                                               List<ProviderAuthorizationRequestCustomizer> customizers) {
+        this(clientRegistrationRepository, oauthLoginFlowService, customizers, new OAuthProviderPolicy());
     }
 
     @Autowired
     public SkillHubOAuth2AuthorizationRequestResolver(
             ClientRegistrationRepository clientRegistrationRepository,
             OAuthLoginFlowService oauthLoginFlowService,
-            List<ProviderAuthorizationRequestCustomizer> customizers) {
+            List<ProviderAuthorizationRequestCustomizer> customizers,
+            OAuthProviderPolicy oauthProviderPolicy) {
         this.delegate = new DefaultOAuth2AuthorizationRequestResolver(
                 clientRegistrationRepository,
                 "/oauth2/authorization"
         );
         this.oauthLoginFlowService = oauthLoginFlowService;
+        this.oauthProviderPolicy = oauthProviderPolicy;
         Map<String, ProviderAuthorizationRequestCustomizer> byProvider = customizers.stream()
                 .collect(Collectors.toMap(
                         ProviderAuthorizationRequestCustomizer::getProvider,
@@ -61,11 +70,18 @@ public class SkillHubOAuth2AuthorizationRequestResolver
 
     @Override
     public OAuth2AuthorizationRequest resolve(HttpServletRequest request) {
-        return rememberIfAuthorizationRequest(request, delegate.resolve(request));
+        OAuth2AuthorizationRequest resolved = delegate.resolve(request);
+        if (resolved != null && !oauthProviderPolicy.isAllowed(resolved.getAttribute(OAuth2ParameterNames.REGISTRATION_ID))) {
+            return null;
+        }
+        return rememberIfAuthorizationRequest(request, resolved);
     }
 
     @Override
     public OAuth2AuthorizationRequest resolve(HttpServletRequest request, String clientRegistrationId) {
+        if (!oauthProviderPolicy.isAllowed(clientRegistrationId)) {
+            return null;
+        }
         return rememberIfAuthorizationRequest(request, delegate.resolve(request, clientRegistrationId));
     }
 

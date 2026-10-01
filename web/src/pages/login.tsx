@@ -36,6 +36,7 @@ export function LoginPage() {
   const bootstrapMethod = authMethods?.find((method) => method.methodType === 'SESSION_BOOTSTRAP')
   const hasOrganizationMethod = bootstrapConfig.enabled
   const hasExternalMethods = authMethods?.some((method) => method.methodType === 'OAUTH_REDIRECT')
+  const localPasswordEnabled = authMethods?.some((method) => method.methodType === 'PASSWORD') ?? false
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -90,7 +91,7 @@ export function LoginPage() {
           </div>
         ) : null}
 
-        <div hidden={loginMode !== 'personal'}>
+        {localPasswordEnabled ? <div hidden={loginMode !== 'personal'}>
         <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="username">{t('login.username')}</label>
@@ -161,7 +162,7 @@ export function LoginPage() {
                 <ArrowRight aria-hidden="true" className="ml-2 h-4 w-4" />
               </Button>
         </form>
-        </div>
+        </div> : null}
 
         {bootstrapConfig.enabled ? (
           <div hidden={loginMode !== 'organization'} className="space-y-2">
@@ -183,13 +184,13 @@ export function LoginPage() {
           </section>
         ) : null}
 
-        <p className="text-center text-sm text-muted-foreground">
+        {localPasswordEnabled ? <p className="text-center text-sm text-muted-foreground">
           {t('login.noAccount')}
           {' '}
           <Link to="/register" search={{ returnTo }} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
             {t('login.register')}
           </Link>
-        </p>
+        </p> : null}
 
         <p className="mt-auto text-center text-xs text-muted-foreground">
           {t('login.agreementPrefix')}

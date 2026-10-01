@@ -291,9 +291,18 @@ services:
 仅允许 Authelia（registration id 为 `oidc`）的示例：
 
 ```bash
+SKILLHUB_PUBLIC_BASE_URL=https://skillhub.moon-insight.com
+SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OIDC_CLIENT_ID=<Authelia 中配置的 client id>
+SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OIDC_CLIENT_SECRET=<Authelia 中配置的 client secret>
+SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_OIDC_ISSUER_URI=https://authelia.moon-insight.com
 SKILLHUB_AUTH_LOCAL_UI_ENABLED=false
 SKILLHUB_AUTH_OAUTH_ALLOWED_PROVIDERS=oidc
 ```
+
+Authelia 客户端需允许回调 `https://skillhub.moon-insight.com/login/oauth2/code/oidc`。
+`scripts/runtime.sh` 检测到非空 OIDC client ID 后自动叠加 `compose.authelia.yml`；
+手动启动 Compose 时也需同时传入该覆盖文件。客户端密钥只写入受控的
+`.env.release`，不要提交到仓库。
 
 前端不维护第二份 Provider 白名单，而是以 `/api/v1/auth/methods` 返回的目录为准。
 

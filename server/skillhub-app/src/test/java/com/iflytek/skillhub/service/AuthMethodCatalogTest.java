@@ -6,15 +6,38 @@ import static org.mockito.Mockito.mock;
 import com.iflytek.skillhub.auth.bootstrap.PassiveSessionAuthenticator;
 import com.iflytek.skillhub.auth.direct.DirectAuthProvider;
 import com.iflytek.skillhub.auth.direct.DirectAuthRequest;
+import com.iflytek.skillhub.auth.oauth.OAuthProviderPolicy;
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
 import com.iflytek.skillhub.config.AuthSessionBootstrapProperties;
 import com.iflytek.skillhub.config.DirectAuthProperties;
+import com.iflytek.skillhub.config.LocalAuthUiProperties;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties;
 
 class AuthMethodCatalogTest {
+
+    @Test
+    void autheliaOnlyPolicyShouldHideLocalAndOtherOAuthMethods() {
+        OAuth2ClientProperties oauthProperties = new OAuth2ClientProperties();
+        oauthProperties.getRegistration().put("oidc", registration("authelia-client", "Authelia"));
+        oauthProperties.getRegistration().put("github", registration("github-client", "GitHub"));
+        LocalAuthUiProperties localUi = new LocalAuthUiProperties();
+        localUi.setEnabled(false);
+        OAuthProviderPolicy policy = new OAuthProviderPolicy();
+        policy.setAllowedProviders(List.of("oidc"));
+
+        AuthMethodCatalog catalog = new AuthMethodCatalog(
+            oauthProperties, new DirectAuthProperties(), new AuthSessionBootstrapProperties(),
+            localUi, policy, List.of(), List.of()
+        );
+
+        assertThat(catalog.listMethods(null)).extracting(method -> method.id())
+            .containsExactly("oauth-oidc");
+        assertThat(catalog.listOAuthProviders(null)).extracting(provider -> provider.id())
+            .containsExactly("oidc");
+    }
 
     @Test
     void catalogsShouldHideEmptyAndPlaceholderOAuthProviders() {
@@ -29,6 +52,8 @@ class AuthMethodCatalogTest {
             oauthProperties,
             new DirectAuthProperties(),
             new AuthSessionBootstrapProperties(),
+            new LocalAuthUiProperties(),
+            new OAuthProviderPolicy(),
             List.of(),
             List.of()
         );
@@ -87,6 +112,8 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
+            new LocalAuthUiProperties(),
+            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );
@@ -136,6 +163,8 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
+            new LocalAuthUiProperties(),
+            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );

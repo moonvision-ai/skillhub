@@ -128,6 +128,7 @@ else
   echo "Using GitHub raw for runtime files: $SKILLHUB_RAW_BASE"
 fi
 COMPOSE_FILE="$SKILLHUB_HOME/compose.release.yml"
+AUTHELIA_COMPOSE_FILE="$SKILLHUB_HOME/compose.authelia.yml"
 ENV_EXAMPLE_FILE="$SKILLHUB_HOME/.env.release.example"
 ENV_FILE="$SKILLHUB_HOME/.env.release"
 
@@ -306,6 +307,7 @@ SQL
 prepare_runtime_files() {
   mkdir -p "$SKILLHUB_HOME"
   download_file "$SKILLHUB_RAW_BASE/compose.release.yml" "$COMPOSE_FILE"
+  download_file "$SKILLHUB_RAW_BASE/compose.authelia.yml" "$AUTHELIA_COMPOSE_FILE"
   download_file "$SKILLHUB_RAW_BASE/.env.release.example" "$ENV_EXAMPLE_FILE"
 
   if [ ! -f "$ENV_FILE" ]; then
@@ -372,6 +374,11 @@ prepare_runtime_files() {
 
 run_compose() {
   compose_cmd="$(find_compose)"
+  if [ -n "$(get_env_value SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OIDC_CLIENT_ID '')" ]; then
+    # shellcheck disable=SC2086
+    $compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f "$AUTHELIA_COMPOSE_FILE" "$@"
+    return
+  fi
   # shellcheck disable=SC2086
   $compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
