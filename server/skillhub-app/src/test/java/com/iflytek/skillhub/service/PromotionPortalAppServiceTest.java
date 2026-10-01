@@ -6,6 +6,7 @@ import com.iflytek.skillhub.domain.review.PromotionRequest;
 import com.iflytek.skillhub.domain.review.PromotionRequestRepository;
 import com.iflytek.skillhub.domain.review.PromotionService;
 import com.iflytek.skillhub.dto.PromotionResponseDto;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import com.iflytek.skillhub.repository.GovernanceQueryRepository;
 import java.lang.reflect.Field;
 import java.util.Set;
@@ -47,7 +48,8 @@ class PromotionPortalAppServiceTest {
                 promotionRequestRepository,
                 governanceQueryRepository,
                 rbacService,
-                auditLogService
+                auditLogService,
+                new RequestIdAccessor()
         );
     }
 
@@ -129,6 +131,37 @@ class PromotionPortalAppServiceTest {
                 eq("127.0.0.1"),
                 eq("JUnit"),
                 eq("{\"comment\":\"ship\"}")
+        );
+    }
+
+    @Test
+    void approvePromotion_escapesMultiLineReviewCommentIntoValidJson() {
+        // Regression: the detail column is JSONB. A reviewer pressing Enter used
+        // to produce a raw newline inside the JSON string, so the audit insert
+        // failed after the promotion had already been approved.
+        String comment = "looks good\nbut rename it \"foo\"\tfirst\\done";
+        PromotionRequest promotion = promotionRequest(PROMOTION_ID, SUBMITTER_ID);
+        when(rbacService.getUserRoleCodes(REVIEWER_ID)).thenReturn(Set.of("SKILL_ADMIN"));
+        when(promotionService.approvePromotion(PROMOTION_ID, REVIEWER_ID, comment, Set.of("SKILL_ADMIN")))
+                .thenReturn(promotion);
+        when(governanceQueryRepository.getPromotionResponse(promotion)).thenReturn(response(promotion));
+
+        service.approvePromotion(
+                PROMOTION_ID,
+                comment,
+                REVIEWER_ID,
+                new AuditRequestContext("127.0.0.1", "JUnit")
+        );
+
+        verify(auditLogService).record(
+                eq(REVIEWER_ID),
+                eq("PROMOTION_APPROVE"),
+                eq("PROMOTION_REQUEST"),
+                eq(PROMOTION_ID),
+                eq(null),
+                eq("127.0.0.1"),
+                eq("JUnit"),
+                eq("{\"comment\":\"looks good\\nbut rename it \\\"foo\\\"\\tfirst\\\\done\"}")
         );
     }
 

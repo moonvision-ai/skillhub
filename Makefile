@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-backend-app build-cli build-frontend build-web check clean cli-install db-reset dev dev-all dev-all-down dev-all-reset dev-down dev-logs dev-server dev-server-restart dev-status dev-web docs-build docs-dev docs-preview generate-api help lint-cli lint-web namespace-smoke parallel-down parallel-init parallel-sync parallel-up pr publish-cli publish-cli-major publish-cli-minor staging staging-down staging-logs test test-backend test-backend-app test-cli test-e2e-frontend test-e2e-smoke-frontend test-frontend test-web typecheck-cli typecheck-web validate-release-config web-deps web-install web-install-ci
+.PHONY: build build-backend build-backend-app build-builtin-skills build-cli build-frontend build-web check clean cli-install db-reset dev dev-all dev-all-down dev-all-reset dev-down dev-logs dev-server dev-server-restart dev-status dev-web docs-build docs-dev docs-preview generate-api help lint-cli lint-web namespace-smoke suite-smoke suite-bundle-smoke parallel-down parallel-init parallel-sync parallel-up pr publish-cli publish-cli-major publish-cli-minor staging staging-down staging-logs test test-backend test-backend-app test-builtin-skills test-cli test-e2e-frontend test-e2e-smoke-frontend test-frontend test-redis-cluster test-web typecheck-cli typecheck-web validate-release-config web-deps web-install web-install-ci
 
 DEV_DIR := .dev
 DEV_SERVER_PID := $(DEV_DIR)/server.pid
@@ -43,7 +43,7 @@ dev-all: ## 一键启动本地开发环境（依赖 + scanner + 后端 + 前端�
 		echo "Backend already running with PID $$(cat $(DEV_SERVER_PID))"; \
 	else \
 		echo "Starting backend..."; \
-		$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- /bin/sh -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null; \
+		$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- bash -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null; \
 	fi
 	@if $(DEV_PROCESS) status --pid-file $(DEV_WEB_PID) >/dev/null 2>&1; then \
 		echo "Frontend already running with PID $$(cat $(DEV_WEB_PID))"; \
@@ -69,7 +69,7 @@ dev-all: ## 一键启动本地开发环境（依赖 + scanner + 后端 + 前端�
 			echo "Backend did not become ready on attempt $$attempt. Restarting..."; \
 			$(DEV_PROCESS) stop --pid-file $(DEV_SERVER_PID); \
 			sleep 2; \
-			$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- /bin/sh -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null; \
+			$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- bash -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null; \
 		fi; \
 	done; \
 		if [ "$$backend_ready" -ne 1 ]; then \
@@ -127,12 +127,12 @@ dev-all: ## 一键启动本地开发环境（依赖 + scanner + 后端 + 前端�
 	@echo "  Frontend: $(DEV_WEB_LOG)"
 
 dev-server: ## 启动后端开发服务器
-	cd server && /bin/sh -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)'
+	cd server && bash -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)'
 
 dev-server-restart: ## 重启后端开发服务器
 	@mkdir -p $(DEV_DIR)
 	@$(DEV_PROCESS) stop --pid-file $(DEV_SERVER_PID)
-	@$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- /bin/sh -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null
+	@$(DEV_PROCESS) start --pid-file $(DEV_SERVER_PID) --log-file $(DEV_SERVER_LOG) --cwd server -- bash -lc '$(DEV_SERVER_PREPARE) && exec env $(DEV_SERVER_SCANNER_ENV) $(DEV_SERVER_CMD)' >/dev/null
 	@echo "Waiting for backend on $(DEV_API_URL) ..."
 	@for i in $$(seq 1 30); do \
 		if curl -sf $(DEV_API_URL)/actuator/health >/dev/null; then \
@@ -146,6 +146,12 @@ dev-server-restart: ## 重启后端开发服务器
 
 namespace-smoke: ## 运行命名空间工作流 smoke test
 	./scripts/namespace-smoke-test.sh $(DEV_API_URL)
+
+suite-smoke: ## 运行 Skill Suite 生命周期 smoke test
+	./scripts/suite-smoke-test.sh $(DEV_API_URL)
+
+suite-bundle-smoke: ## 运行带真实认证的 Suite Bundle 创建/更新 smoke test
+	./scripts/suite-bundle-smoke-test.sh $(DEV_API_URL)
 
 dev-down: ## 停止本地开发环境（含 skill-scanner）
 	$(DEV_COMPOSE) down --remove-orphans
@@ -204,7 +210,13 @@ test-backend-app: ## 运行 skillhub-app 及其依赖模块测试
 
 build: build-backend build-frontend ## 完整构建前后端
 
+build-builtin-skills: ## 校验并确定性打包官方内置 Skills
+	python3 scripts/build-builtin-skills.py
+
 test: test-backend test-frontend ## 运行前后端完整单元测试
+
+test-builtin-skills: ## 验证内置 Skills 清单、打包结果和安全边界
+	bash scripts/tests/build-builtin-skills-test.sh
 
 check: build test ## 执行前后端完整构建和完整单元测试
 
@@ -307,7 +319,7 @@ staging: ## 构建并启动 staging 环境，运行 smoke test（混合模式：
 	@echo "=== [4/5] Starting staging services ==="
 	$(STAGING_COMPOSE) up -d --wait server web
 	@echo "=== [5/5] Running smoke tests ==="
-	@if BOOTSTRAP_ADMIN_USERNAME=admin BOOTSTRAP_ADMIN_PASSWORD='Admin@staging2026' \
+	@if SMOKE_ADMIN_USERNAME=admin SMOKE_ADMIN_PASSWORD='Admin@staging2026' \
 		bash scripts/smoke-test.sh $(STAGING_API_URL); then \
 		echo ""; \
 		echo "Staging passed. Environment is running:"; \
@@ -394,3 +406,6 @@ docs-build: ## 构建文档站点
 
 docs-preview: ## 预览构建后的文档站点
 	cd docs/skillhub && npm run preview
+
+test-redis-cluster: ## 使用真实 Redis Cluster 验证 Spring Data、Session 和 Redisson Stream
+	./scripts/redis-cluster-integration-test.sh

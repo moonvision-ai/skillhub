@@ -15,7 +15,10 @@ import com.iflytek.skillhub.domain.review.ReviewTaskRepository;
 import com.iflytek.skillhub.domain.security.SecurityScanService;
 import com.iflytek.skillhub.domain.shared.exception.DomainBadRequestException;
 import com.iflytek.skillhub.domain.shared.exception.DomainForbiddenException;
+import com.iflytek.skillhub.domain.shared.exception.LocalizedDomainException;
 import com.iflytek.skillhub.domain.skill.*;
+import com.iflytek.skillhub.domain.skill.metadata.ComplianceMetadataService;
+import com.iflytek.skillhub.domain.skill.metadata.ComplianceSnapshot;
 import com.iflytek.skillhub.domain.skill.metadata.SkillMetadata;
 import com.iflytek.skillhub.domain.skill.metadata.SkillMetadataParser;
 import com.iflytek.skillhub.domain.skill.validation.PackageEntry;
@@ -26,6 +29,7 @@ import com.iflytek.skillhub.storage.ObjectStorageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,9 +37,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.IOException;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
@@ -47,7 +52,9 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -62,12 +69,27 @@ public class SkillPublishService {
 
     private static final DateTimeFormatter AUTO_VERSION_FORMATTER =
             DateTimeFormatter.ofPattern("yyyyMMdd.HHmmss").withZone(ZoneId.systemDefault());
+    private static final Set<SkillVersionStatus> REPLACEABLE_VERSION_STATUSES = Set.of(
+            SkillVersionStatus.DRAFT,
+            SkillVersionStatus.SCAN_FAILED,
+            SkillVersionStatus.UPLOADED,
+            SkillVersionStatus.REJECTED
+    );
     private static final Logger log = LoggerFactory.getLogger(SkillPublishService.class);
 
     public record PublishResult(
             Long skillId,
             String slug,
             SkillVersion version
+    ) {}
+
+    private record StagedPackageFile(
+            Path path,
+            String filePath,
+            String storageKey,
+            long size,
+            String contentType,
+            String sha256
     ) {}
 
     private final NamespaceRepository namespaceRepository;
@@ -78,6 +100,7 @@ public class SkillPublishService {
     private final ObjectStorageService objectStorageService;
     private final SkillPackageValidator skillPackageValidator;
     private final SkillMetadataParser skillMetadataParser;
+    private final ComplianceMetadataService complianceMetadataService = new ComplianceMetadataService();
     private final PrePublishValidator prePublishValidator;
     private final ObjectMapper objectMapper;
     private final ReviewTaskRepository reviewTaskRepository;
@@ -281,6 +304,38 @@ public class SkillPublishService {
     }
 
     /**
+     * Publishes one package that was explicitly bound by a confirmed Suite Bundle plan.
+     *
+     * <p>Unlike the interactive single-Skill path, this entry point never withdraws a pending
+     * review and never replaces an existing unpublished version. The expected identity is checked
+     * again in the write transaction so a stale Bundle plan cannot target a different Skill or
+     * version after confirmation.
+     */
+    @Transactional
+    public PublishResult publishBundleMemberFromEntries(
+            String namespaceSlug,
+            Long expectedSkillId,
+            String expectedSkillSlug,
+            String expectedVersion,
+            List<PackageEntry> entries,
+            Map<String, String> stagedSha256,
+            String publisherId,
+            SkillVisibility visibility,
+            Map<Long, NamespaceRole> userNamespaceRoles,
+            Set<String> platformRoles,
+            boolean confirmWarnings
+    ) {
+        BundlePublicationTarget target = new BundlePublicationTarget(
+                expectedSkillId, expectedSkillSlug, expectedVersion,
+                userNamespaceRoles == null ? Map.of() : Map.copyOf(userNamespaceRoles),
+                stagedSha256 == null ? Map.of() : Map.copyOf(stagedSha256));
+        return publishFromEntriesInternal(
+                namespaceSlug, entries, publisherId, visibility,
+                platformRoles == null ? Set.of() : platformRoles,
+                confirmWarnings, false, false, target);
+    }
+
+    /**
      * Rebuilds a new version from an already published version by copying its
      * stored files and rewriting the embedded metadata version field.
      */
@@ -331,6 +386,21 @@ public class SkillPublishService {
             boolean confirmWarnings,
             boolean forceAutoPublish,
             boolean bypassMembershipCheck) {
+        return publishFromEntriesInternal(
+                namespaceSlug, entries, publisherId, visibility, platformRoles,
+                confirmWarnings, forceAutoPublish, bypassMembershipCheck, null);
+    }
+
+    private PublishResult publishFromEntriesInternal(
+            String namespaceSlug,
+            List<PackageEntry> entries,
+            String publisherId,
+            SkillVisibility visibility,
+            Set<String> platformRoles,
+            boolean confirmWarnings,
+            boolean forceAutoPublish,
+            boolean bypassMembershipCheck,
+            BundlePublicationTarget bundleTarget) {
 
         // 1. Find namespace by slug
         Namespace namespace = namespaceRepository.findBySlug(namespaceSlug)
@@ -366,6 +436,15 @@ public class SkillPublishService {
             metadata = new SkillMetadata(metadata.name(), metadata.description(), autoVersion, metadata.body(), metadata.frontmatter());
         }
         String skillSlug = SlugValidator.slugify(metadata.name());
+        if (bundleTarget != null
+                && (!bundleTarget.expectedSkillSlug().equals(skillSlug)
+                || !bundleTarget.expectedVersion().equals(metadata.version()))) {
+            throw bundleStateChanged();
+        }
+        if (bundleTarget != null && !bundleTarget.stagedSha256().keySet().equals(
+                entries.stream().map(PackageEntry::path).collect(Collectors.toSet()))) {
+            throw bundleStateChanged();
+        }
 
         // 5. Run PrePublishValidator
         PrePublishValidator.SkillPackageContext context = new PrePublishValidator.SkillPackageContext(
@@ -393,7 +472,9 @@ public class SkillPublishService {
         // Check if any other owner's skill has published versions
         // Only PUBLISHED status blocks same-name publishing (UPLOADED/PENDING_REVIEW allowed)
         for (Skill existing : existingSkills) {
-            if (!existing.getOwnerId().equals(publisherId)) {
+            boolean isBoundTarget = bundleTarget != null
+                    && Objects.equals(existing.getId(), bundleTarget.expectedSkillId());
+            if (!existing.getOwnerId().equals(publisherId) && !isBoundTarget) {
                 boolean hasPublished = !skillVersionRepository
                         .findBySkillIdAndStatus(existing.getId(), SkillVersionStatus.PUBLISHED)
                         .isEmpty();
@@ -408,13 +489,10 @@ public class SkillPublishService {
             }
         }
 
-        // Find or create skill for current user
-        Skill skill = skillRepository.findByNamespaceIdAndSlugAndOwnerId(namespace.getId(), skillSlug, publisherId)
-                .orElseGet(() -> {
-                    Skill newSkill = new Skill(namespace.getId(), skillSlug, publisherId, visibility);
-                    newSkill.setCreatedBy(publisherId);
-                    return skillRepository.save(newSkill);
-                });
+        Skill skill = bundleTarget == null
+                ? findOrCreateOwnedSkill(namespace, skillSlug, publisherId, visibility)
+                : resolveBundleTargetSkill(namespace, existingSkills, publisherId, visibility,
+                        platformRoles, bundleTarget);
 
         if (skill.getStatus() == SkillStatus.ARCHIVED) {
             throw new DomainBadRequestException("error.skill.publish.archived", skillSlug);
@@ -424,16 +502,24 @@ public class SkillPublishService {
         // When publishing a new version, existing PENDING_REVIEW versions are withdrawn to UPLOADED status
         List<SkillVersion> pendingVersions = skillVersionRepository
                 .findBySkillIdAndStatus(skill.getId(), SkillVersionStatus.PENDING_REVIEW);
-        for (SkillVersion pending : pendingVersions) {
-            reviewTaskRepository.findBySkillVersionIdAndStatus(pending.getId(), ReviewTaskStatus.PENDING)
-                    .ifPresent(reviewTaskRepository::delete);
-            pending.setStatus(SkillVersionStatus.UPLOADED);
-            skillVersionRepository.save(pending);
+        if (bundleTarget != null && !pendingVersions.isEmpty()) {
+            throw bundleStateChanged();
+        }
+        if (bundleTarget == null) {
+            for (SkillVersion pending : pendingVersions) {
+                reviewTaskRepository.findBySkillVersionIdAndStatus(pending.getId(), ReviewTaskStatus.PENDING)
+                        .ifPresent(reviewTaskRepository::delete);
+                pending.setStatus(SkillVersionStatus.UPLOADED);
+                skillVersionRepository.save(pending);
+            }
         }
 
         // 7. Check version doesn't already exist
         java.util.Optional<SkillVersion> existingVersion = skillVersionRepository.findBySkillIdAndVersion(skill.getId(), metadata.version());
         if (existingVersion.isPresent()) {
+            if (bundleTarget != null) {
+                throw bundleStateChanged();
+            }
             SkillVersion matchedVersion = existingVersion.get();
             if (matchedVersion.getStatus() == SkillVersionStatus.PUBLISHED) {
                 throw new DomainBadRequestException("error.skill.version.exists", metadata.version());
@@ -456,70 +542,105 @@ public class SkillPublishService {
             version.setStatus(SkillVersionStatus.PENDING_REVIEW);
         }
 
+        ComplianceSnapshot complianceSnapshot = complianceMetadataService.buildSnapshot(metadata.frontmatter(), entries);
+
         // Store metadata as JSON
         try {
-            String metadataJson = objectMapper.writeValueAsString(metadata);
+            String metadataJson = objectMapper.writeValueAsString(buildParsedMetadata(metadata, complianceSnapshot));
             version.setParsedMetadataJson(metadataJson);
             version.setManifestJson(objectMapper.writeValueAsString(buildManifest(entries)));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize metadata", e);
         }
 
-        version = skillVersionRepository.save(version);
+        try {
+            version = skillVersionRepository.save(version);
+            // Detect the version-coordinate race before object storage writes begin.
+            skillVersionRepository.flush();
+        } catch (DataIntegrityViolationException ex) {
+            // A concurrent publish inserted the same (skillId, version) coordinate first and won the
+            // unique-constraint race. Surface a deterministic business conflict rather than an HTTP 500.
+            throw new DomainBadRequestException("error.skill.publish.concurrentConflict", skillSlug);
+        }
 
         // 9. Upload each file to storage and compute SHA-256
         List<SkillFile> skillFiles = new ArrayList<>();
         long totalSize = 0;
 
+        Path bundleZip = null;
+        List<StagedPackageFile> stagedFiles = new ArrayList<>();
+        List<Path> temporaryEntryFiles = new ArrayList<>();
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             HexFormat hexFormat = HexFormat.of();
-
-            for (PackageEntry entry : entries) {
-                String storageKey = String.format("skills/%d/%d/%s", skill.getId(), version.getId(), entry.path());
-
-                // Upload to storage
-                objectStorageService.putObject(
-                        storageKey,
-                        new ByteArrayInputStream(entry.content()),
-                        entry.size(),
-                        entry.contentType()
-                );
-
-                // Compute SHA-256
-                byte[] hash = digest.digest(entry.content());
-                String sha256 = hexFormat.formatHex(hash);
-
-                // Create SkillFile record
-                SkillFile skillFile = new SkillFile(
-                        version.getId(),
-                        entry.path(),
-                        entry.size(),
-                        entry.contentType(),
-                        sha256,
-                        storageKey
-                );
-                skillFiles.add(skillFile);
-                totalSize += entry.size();
-
-                digest.reset();
+            bundleZip = Files.createTempFile("skillhub-package-", ".zip");
+            try (OutputStream bundleOutput = Files.newOutputStream(bundleZip);
+                 ZipOutputStream zipOutput = new ZipOutputStream(bundleOutput)) {
+                for (PackageEntry entry : entries) {
+                    String storageKey = String.format(
+                            "skills/%d/%d/%s", skill.getId(), version.getId(), entry.path());
+                    Path stagedFile = Files.createTempFile("skillhub-package-entry-", ".tmp");
+                    temporaryEntryFiles.add(stagedFile);
+                    ZipEntry zipEntry = new ZipEntry(entry.path());
+                    zipOutput.putNextEntry(zipEntry);
+                    long actualSize = 0;
+                    digest.reset();
+                    try (InputStream input = entry.openStream();
+                         OutputStream stagedOutput = Files.newOutputStream(stagedFile)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        int read;
+                        while ((read = input.read(buffer)) != -1) {
+                            stagedOutput.write(buffer, 0, read);
+                            zipOutput.write(buffer, 0, read);
+                            digest.update(buffer, 0, read);
+                            actualSize += read;
+                        }
+                    }
+                    zipOutput.closeEntry();
+                    if (actualSize != entry.size()) {
+                        throw new DomainBadRequestException(
+                                "error.suite.bundle.member.stateChanged");
+                    }
+                    String sha256 = hexFormat.formatHex(digest.digest());
+                    String expectedSha256 = bundleTarget == null
+                            ? null
+                            : bundleTarget.stagedSha256().get(entry.path());
+                    if (expectedSha256 != null && !expectedSha256.equalsIgnoreCase(sha256)) {
+                        throw new DomainBadRequestException(
+                                "error.suite.bundle.member.stateChanged");
+                    }
+                    stagedFiles.add(new StagedPackageFile(
+                            stagedFile, entry.path(), storageKey, actualSize, entry.contentType(), sha256));
+                }
+                zipOutput.finish();
             }
+            for (StagedPackageFile staged : stagedFiles) {
+                try (InputStream stagedInput = Files.newInputStream(staged.path())) {
+                    objectStorageService.putObject(
+                            staged.storageKey(), stagedInput, staged.size(), staged.contentType());
+                }
+                skillFiles.add(new SkillFile(
+                        version.getId(), staged.filePath(), staged.size(),
+                        staged.contentType(), staged.sha256(), staged.storageKey()));
+                totalSize += staged.size();
+            }
+            String bundleKey = String.format("packages/%d/%d/bundle.zip", skill.getId(), version.getId());
+            long bundleSize = Files.size(bundleZip);
+            try (InputStream bundleInput = Files.newInputStream(bundleZip)) {
+                objectStorageService.putObject(
+                        bundleKey, bundleInput, bundleSize, "application/zip");
+            }
+        } catch (LocalizedDomainException exception) {
+            throw exception;
         } catch (Exception e) {
             throw new IllegalStateException("Failed to process files", e);
+        } finally {
+            temporaryEntryFiles.forEach(this::deleteTemporaryFile);
+            deleteTemporaryFile(bundleZip);
         }
 
         // 10. Save SkillFile records
         skillFileRepository.saveAll(skillFiles);
-
-        // 10.5 Build and upload bundle zip for download endpoints
-        byte[] bundleZip = buildBundle(entries);
-        String bundleKey = String.format("packages/%d/%d/bundle.zip", skill.getId(), version.getId());
-        objectStorageService.putObject(
-                bundleKey,
-                new ByteArrayInputStream(bundleZip),
-                bundleZip.length,
-                "application/zip"
-        );
 
         // 11. Update version stats
         version.setFileCount(skillFiles.size());
@@ -530,7 +651,8 @@ public class SkillPublishService {
 
         // Create review task for PUBLIC/NAMESPACE_ONLY (not PRIVATE)
         if (!autoPublish && visibility != SkillVisibility.PRIVATE) {
-            ReviewTask reviewTask = new ReviewTask(version.getId(), namespace.getId(), publisherId);
+            ReviewTask reviewTask = new ReviewTask(
+                    version.getId(), skill.getId(), namespace.getId(), version.getVersion(), publisherId);
             ReviewTask savedReviewTask = reviewTaskRepository.save(reviewTask);
             eventPublisher.publishEvent(new ReviewSubmittedEvent(
                     savedReviewTask.getId(),
@@ -565,8 +687,67 @@ public class SkillPublishService {
         return new PublishResult(skill.getId(), skill.getSlug(), version);
     }
 
+    private Skill findOrCreateOwnedSkill(
+            Namespace namespace,
+            String skillSlug,
+            String publisherId,
+            SkillVisibility visibility
+    ) {
+        return skillRepository.findByNamespaceIdAndSlugAndOwnerId(namespace.getId(), skillSlug, publisherId)
+                .orElseGet(() -> createSkill(namespace, skillSlug, publisherId, visibility));
+    }
+
+    private Skill resolveBundleTargetSkill(
+            Namespace namespace,
+            List<Skill> coordinateSkills,
+            String publisherId,
+            SkillVisibility visibility,
+            Set<String> platformRoles,
+            BundlePublicationTarget target
+    ) {
+        if (target.expectedSkillId() == null) {
+            if (!coordinateSkills.isEmpty()) {
+                throw bundleStateChanged();
+            }
+            return createSkill(namespace, target.expectedSkillSlug(), publisherId, visibility);
+        }
+        Skill skill = coordinateSkills.stream()
+                .filter(candidate -> Objects.equals(candidate.getId(), target.expectedSkillId()))
+                .findFirst()
+                .orElseThrow(this::bundleStateChanged);
+        if (!Objects.equals(skill.getNamespaceId(), namespace.getId())
+                || !skill.getSlug().equals(target.expectedSkillSlug())
+                || skill.getVisibility() != visibility) {
+            throw bundleStateChanged();
+        }
+        assertCanManageLifecycle(skill, publisherId, target.userNamespaceRoles(), platformRoles);
+        return skill;
+    }
+
+    private Skill createSkill(
+            Namespace namespace,
+            String skillSlug,
+            String publisherId,
+            SkillVisibility visibility
+    ) {
+        Skill newSkill = new Skill(namespace.getId(), skillSlug, publisherId, visibility);
+        newSkill.setCreatedBy(publisherId);
+        try {
+            Skill savedSkill = skillRepository.save(newSkill);
+            // save() may defer the unique-constraint check until transaction commit.
+            skillRepository.flush();
+            return savedSkill;
+        } catch (DataIntegrityViolationException ex) {
+            throw new DomainBadRequestException("error.skill.publish.concurrentConflict", skillSlug);
+        }
+    }
+
+    private DomainBadRequestException bundleStateChanged() {
+        return new DomainBadRequestException("error.suite.bundle.member.stateChanged");
+    }
+
     private void deleteReplaceableVersionArtifacts(Skill skill, SkillVersion version, String namespaceSlug) {
-        if (version.getStatus() == SkillVersionStatus.PUBLISHED) {
+        if (!REPLACEABLE_VERSION_STATUSES.contains(version.getStatus())) {
             throw new DomainBadRequestException("error.skill.version.exists", version.getVersion());
         }
 
@@ -577,6 +758,9 @@ public class SkillPublishService {
             skillRepository.flush();
         }
 
+        // A replaceable version may still have one obsolete pending task, but settled attempts are
+        // durable governance history. The database detaches those settled attempts from the
+        // replaced version while retaining their skill/version snapshot.
         reviewTaskRepository.findBySkillVersionIdAndStatus(version.getId(), ReviewTaskStatus.PENDING)
                 .ifPresent(reviewTaskRepository::delete);
 
@@ -658,12 +842,39 @@ public class SkillPublishService {
     private void assertCanManageLifecycle(Skill skill,
                                           String actorUserId,
                                           Map<Long, NamespaceRole> userNamespaceRoles) {
+        assertCanManageLifecycle(skill, actorUserId, userNamespaceRoles, Set.of());
+    }
+
+    private void assertCanManageLifecycle(Skill skill,
+                                          String actorUserId,
+                                          Map<Long, NamespaceRole> userNamespaceRoles,
+                                          Set<String> platformRoles) {
         NamespaceRole namespaceRole = userNamespaceRoles.get(skill.getNamespaceId());
         boolean canManage = skill.getOwnerId().equals(actorUserId)
                 || namespaceRole == NamespaceRole.ADMIN
-                || namespaceRole == NamespaceRole.OWNER;
+                || namespaceRole == NamespaceRole.OWNER
+                || platformRoles.contains("SUPER_ADMIN");
         if (!canManage) {
             throw new DomainForbiddenException("error.skill.lifecycle.noPermission");
+        }
+    }
+
+    private record BundlePublicationTarget(
+            Long expectedSkillId,
+            String expectedSkillSlug,
+            String expectedVersion,
+            Map<Long, NamespaceRole> userNamespaceRoles,
+            Map<String, String> stagedSha256
+    ) {
+        private BundlePublicationTarget {
+            if (expectedSkillSlug == null || expectedSkillSlug.isBlank()
+                    || expectedVersion == null || expectedVersion.isBlank()) {
+                throw new IllegalArgumentException("Bundle publication target must include slug and version");
+            }
+            if (stagedSha256.values().stream().anyMatch(
+                    hash -> hash == null || !hash.matches("[0-9a-f]{64}"))) {
+                throw new IllegalArgumentException("Bundle staged hashes must be lowercase SHA-256 values");
+            }
         }
     }
 
@@ -720,19 +931,25 @@ public class SkillPublishService {
                 .toList();
     }
 
-    private byte[] buildBundle(List<PackageEntry> entries) {
-        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-             ZipOutputStream zipOutputStream = new ZipOutputStream(outputStream)) {
-            for (PackageEntry entry : entries) {
-                ZipEntry zipEntry = new ZipEntry(entry.path());
-                zipOutputStream.putNextEntry(zipEntry);
-                zipOutputStream.write(entry.content());
-                zipOutputStream.closeEntry();
-            }
-            zipOutputStream.finish();
-            return outputStream.toByteArray();
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to build bundle zip", e);
+    private Map<String, Object> buildParsedMetadata(SkillMetadata metadata, ComplianceSnapshot complianceSnapshot) {
+        Map<String, Object> parsedMetadata = new LinkedHashMap<>();
+        parsedMetadata.put("name", metadata.name());
+        parsedMetadata.put("description", metadata.description());
+        parsedMetadata.put("version", metadata.version());
+        parsedMetadata.put("body", metadata.body());
+        parsedMetadata.put("frontmatter", metadata.frontmatter());
+        parsedMetadata.put(ComplianceMetadataService.SNAPSHOT_FIELD_NAME, complianceSnapshot);
+        return parsedMetadata;
+    }
+
+    private void deleteTemporaryFile(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException exception) {
+            log.warn("Failed to delete temporary package file {}", path, exception);
         }
     }
 }

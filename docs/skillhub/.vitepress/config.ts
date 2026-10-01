@@ -24,6 +24,7 @@ export default defineConfig({
           { text: '首页', link: '/' },
           { text: '快速开始', link: '/quickstart' },
           { text: '功能指南', link: '/guide/skill-publish' },
+          { text: '开源周报', link: 'https://iflytek.github.io/skillhub/weekly/' },
           { text: 'FAQ', link: '/faq' },
         ],
         sidebar: [
@@ -38,11 +39,13 @@ export default defineConfig({
             text: '核心功能',
             items: [
               { text: 'Skill 发布与版本管理', link: '/guide/skill-publish' },
+              { text: 'Suite Bundle 批量导入', link: '/guide/suite-bundle' },
               { text: 'Skill 搜索与发现', link: '/guide/skill-discovery' },
               { text: '命名空间与团队管理', link: '/guide/namespace' },
               { text: '审核与治理', link: '/guide/review' },
               { text: '安全扫描', link: '/guide/scanner' },
               { text: '用户交互与社交', link: '/guide/social' },
+              { text: 'Runtime 集成契约', link: '/guide/runtime-integration' },
             ],
           },
           {
@@ -69,6 +72,7 @@ export default defineConfig({
           { text: 'Home', link: '/en/' },
           { text: 'Quick Start', link: '/en/quickstart' },
           { text: 'Guide', link: '/en/guide/skill-publish' },
+          { text: 'Weekly Reports', link: 'https://iflytek.github.io/skillhub/weekly/' },
           { text: 'FAQ', link: '/en/faq' },
         ],
         sidebar: [
@@ -83,11 +87,13 @@ export default defineConfig({
             text: 'Core Features',
             items: [
               { text: 'Skill Publishing & Versioning', link: '/en/guide/skill-publish' },
+              { text: 'Suite Bundle Import', link: '/en/guide/suite-bundle' },
               { text: 'Skill Search & Discovery', link: '/en/guide/skill-discovery' },
               { text: 'Namespace & Team Management', link: '/en/guide/namespace' },
               { text: 'Review & Governance', link: '/en/guide/review' },
               { text: 'Security Scanning', link: '/en/guide/scanner' },
               { text: 'Social & Interaction', link: '/en/guide/social' },
+              { text: 'Runtime Integration Contract', link: '/en/guide/runtime-integration' },
             ],
           },
           {

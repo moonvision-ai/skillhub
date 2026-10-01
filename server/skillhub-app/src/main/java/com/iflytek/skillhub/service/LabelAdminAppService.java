@@ -1,6 +1,7 @@
 package com.iflytek.skillhub.service;
 
 import com.iflytek.skillhub.auth.rbac.RbacService;
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.label.LabelDefinition;
 import com.iflytek.skillhub.domain.label.LabelDefinitionService;
@@ -11,9 +12,9 @@ import com.iflytek.skillhub.dto.AdminLabelUpdateRequest;
 import com.iflytek.skillhub.dto.LabelDefinitionResponse;
 import com.iflytek.skillhub.dto.LabelSortOrderUpdateRequest;
 import com.iflytek.skillhub.dto.LabelTranslationResponse;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import java.util.List;
 import java.util.Set;
-import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -27,17 +28,20 @@ public class LabelAdminAppService {
     private final AuditLogService auditLogService;
     private final RbacService rbacService;
     private final LabelSearchSyncService labelSearchSyncService;
+    private final RequestIdAccessor requestIdAccessor;
 
     public LabelAdminAppService(LabelDefinitionService labelDefinitionService,
                                 SkillLabelService skillLabelService,
                                 AuditLogService auditLogService,
                                 RbacService rbacService,
-                                LabelSearchSyncService labelSearchSyncService) {
+                                LabelSearchSyncService labelSearchSyncService,
+                                RequestIdAccessor requestIdAccessor) {
         this.labelDefinitionService = labelDefinitionService;
         this.skillLabelService = skillLabelService;
         this.auditLogService = auditLogService;
         this.rbacService = rbacService;
         this.labelSearchSyncService = labelSearchSyncService;
+        this.requestIdAccessor = requestIdAccessor;
     }
 
     public List<LabelDefinitionResponse> listAll() {
@@ -59,7 +63,7 @@ public class LabelAdminAppService {
                 userId,
                 platformRoles(userId)
         );
-        recordAudit("LABEL_CREATE", userId, labelDefinition.getId(), auditContext, "{\"slug\":\"" + labelDefinition.getSlug() + "\"}");
+        recordAudit("LABEL_CREATE", userId, labelDefinition.getId(), auditContext, AuditDetail.of("slug", labelDefinition.getSlug()));
         return toResponse(labelDefinition);
     }
 
@@ -84,7 +88,7 @@ public class LabelAdminAppService {
         if (!affectedSkillIds.isEmpty()) {
             afterCommit(() -> labelSearchSyncService.rebuildSkills(affectedSkillIds));
         }
-        recordAudit("LABEL_UPDATE", userId, updated.getId(), auditContext, "{\"slug\":\"" + updated.getSlug() + "\"}");
+        recordAudit("LABEL_UPDATE", userId, updated.getId(), auditContext, AuditDetail.of("slug", updated.getSlug()));
         return toResponse(updated);
     }
 
@@ -99,7 +103,7 @@ public class LabelAdminAppService {
         if (!affectedSkillIds.isEmpty()) {
             afterCommit(() -> labelSearchSyncService.rebuildSkills(affectedSkillIds));
         }
-        recordAudit("LABEL_DELETE", userId, existing.getId(), auditContext, "{\"slug\":\"" + slug + "\"}");
+        recordAudit("LABEL_DELETE", userId, existing.getId(), auditContext, AuditDetail.of("slug", slug));
     }
 
     @Transactional
@@ -115,7 +119,7 @@ public class LabelAdminAppService {
         List<LabelDefinitionResponse> responses = labelDefinitionService.updateSortOrders(updates, platformRoles(userId)).stream()
                 .map(this::toResponse)
                 .toList();
-        recordAudit("LABEL_SORT_ORDER_UPDATE", userId, null, auditContext, "{\"count\":" + request.items().size() + "}");
+        recordAudit("LABEL_SORT_ORDER_UPDATE", userId, null, auditContext, AuditDetail.of("count", request.items().size()));
         return responses;
     }
 
@@ -153,7 +157,7 @@ public class LabelAdminAppService {
                 action,
                 "LABEL",
                 targetId,
-                MDC.get("requestId"),
+                requestIdAccessor.current(),
                 auditContext != null ? auditContext.clientIp() : null,
                 auditContext != null ? auditContext.userAgent() : null,
                 detailJson

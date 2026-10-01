@@ -8,7 +8,9 @@ import com.iflytek.skillhub.domain.skill.SkillFile;
 import com.iflytek.skillhub.domain.skill.SkillVersion;
 import com.iflytek.skillhub.domain.skill.service.SkillDownloadService;
 import com.iflytek.skillhub.domain.skill.service.SkillQueryService;
+import com.iflytek.skillhub.dto.SkillSuiteReferenceResponse;
 import com.iflytek.skillhub.service.SkillLabelAppService;
+import com.iflytek.skillhub.service.SkillSuiteAppService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -50,8 +52,14 @@ class SkillControllerTest {
     @MockBean
     private SkillLabelAppService skillLabelAppService;
 
+    @MockBean
+    private SkillSuiteAppService skillSuiteAppService;
+
     @Test
     void getVersionDetailShouldReturnMetadataFields() throws Exception {
+        String parsedMetadata = """
+                {"name":"demo","complianceSnapshot":{"schemaVersion":"1.0","items":[{"standard":"mitre-attack","version":"v19.1","controlId":"T1059","evidence":[]}],"digest":"sha256:demo"}}
+                """;
         when(skillQueryService.getVersionDetail(
                 eq("team"),
                 eq("demo"),
@@ -66,7 +74,7 @@ class SkillControllerTest {
                         2,
                         128L,
                         Instant.parse("2026-03-12T12:00:00Z"),
-                        "{\"name\":\"demo\"}",
+                        parsedMetadata,
                         "[{\"path\":\"SKILL.md\"}]"
                 ));
 
@@ -74,7 +82,8 @@ class SkillControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.version").value("1.0.0"))
-                .andExpect(jsonPath("$.data.parsedMetadataJson").value("{\"name\":\"demo\"}"))
+                .andExpect(jsonPath("$.data.parsedMetadataJson").value(parsedMetadata))
+                .andExpect(jsonPath("$.data.complianceSnapshot.items[0].controlId").value("T1059"))
                 .andExpect(jsonPath("$.data.manifestJson").value("[{\"path\":\"SKILL.md\"}]"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(jsonPath("$.requestId").isNotEmpty());
@@ -179,6 +188,13 @@ class SkillControllerTest {
                         null,
                         "OWNER_PREVIEW"
                 ));
+        SkillSuiteReferenceResponse suiteReference = new SkillSuiteReferenceResponse(
+                9L, "team", "demo-suite", "Demo Suite", "2.0.0", 3,
+                true, List.of(), 0, 0);
+        when(skillSuiteAppService.findVisibleMemberships(
+                eq(1L), eq((String) null), eq(Map.of()), anySet(), eq(0), eq(20)))
+                .thenReturn(new com.iflytek.skillhub.dto.PageResponse<>(
+                        List.of(suiteReference), 1, 0, 20));
 
         mockMvc.perform(get("/api/web/skills/team/demo"))
                 .andExpect(status().isOk())
@@ -188,6 +204,11 @@ class SkillControllerTest {
                 .andExpect(jsonPath("$.data.headlineVersion.version").value("1.1.0"))
                 .andExpect(jsonPath("$.data.ownerPreviewVersion.id").value(11L))
                 .andExpect(jsonPath("$.data.resolutionMode").value("OWNER_PREVIEW"))
+                .andExpect(jsonPath("$.data.entryForSuites[0].slug").value("demo-suite"))
+                .andExpect(jsonPath("$.data.entryForSuites[0].version").value("2.0.0"))
+                .andExpect(jsonPath("$.data.entryForSuites[0].memberCount").value(3))
+                .andExpect(jsonPath("$.data.memberOfSuites.total").value(1))
+                .andExpect(jsonPath("$.data.memberOfSuites.items[0].currentSkillEntry").value(true))
                 .andExpect(jsonPath("$.data.canInteract").value(false))
                 .andExpect(jsonPath("$.data.canReport").value(false));
     }
@@ -227,6 +248,9 @@ class SkillControllerTest {
     @Test
     void listVersionsShouldExposeDownloadAvailability() throws Exception {
         SkillVersion version = new SkillVersion(1L, "1.0.0", "owner-1");
+        version.setParsedMetadataJson("""
+                {"complianceSnapshot":{"schemaVersion":"1.0","items":[{"standard":"mitre-attack","version":"v19.1","controlId":"T1059","evidence":[]}],"digest":"sha256:demo"}}
+                """);
         when(skillQueryService.listVersions(
                 eq("team"),
                 eq("demo"),
@@ -238,7 +262,8 @@ class SkillControllerTest {
 
         mockMvc.perform(get("/api/v1/skills/team/demo/versions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].downloadAvailable").value(false));
+                .andExpect(jsonPath("$.data.items[0].downloadAvailable").value(false))
+                .andExpect(jsonPath("$.data.items[0].complianceSnapshot.items[0].standard").value("mitre-attack"));
     }
 
     @Test

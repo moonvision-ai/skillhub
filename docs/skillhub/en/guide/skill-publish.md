@@ -49,23 +49,44 @@ New version has serious issues, need to point `latest` tag to previous stable ve
 
 1. **Prepare Skill Package**
 
-Ensure skill package conforms to SkillHub specification:
-- Contains `skill.md` (skill description)
-- Contains `package.json` or `SKILL.md` (metadata)
-- Clear file structure, no sensitive information
+Prepare a skill directory with `SKILL.md` at its root:
+
+- Put both YAML frontmatter and the skill instructions in `SKILL.md`.
+- The frontmatter must contain `name` and `description`. Set `version` there when you need an explicit version.
+- `package.json` does not supply or replace this skill metadata.
+- Keep the package structure clear and exclude sensitive information.
+
+For example, save this as `my-skill/SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: Summarize a short text as numbered steps.
+version: 1.0.0
+---
+
+Summarize the supplied text as numbered steps.
+```
+
+When packaging an existing skill, keep its required scripts, references,
+`agents/` metadata, and license files together. Pass that skill directory
+(`./my-skill` in this example) to the publish command below.
 
 2. **Publish via CLI (Recommended)**
 
 ```bash
-# Configure registry
-export CLAWHUB_REGISTRY=http://localhost:8080
+# Configure the SkillHub registry
+export SKILLHUB_REGISTRY=http://localhost:8080
+export SKILLHUB_TOKEN=YOUR_API_TOKEN
 
 # Publish to default namespace
-npx clawhub publish ./my-skill
+npx @astron-team/skillhub@latest publish ./my-skill
 
 # Publish to specific namespace
-npx clawhub publish ./my-skill --namespace my-team
+npx @astron-team/skillhub@latest publish ./my-skill --namespace my-team
 ```
+
+> The ClawHub CLI publish and sync protocols are not compatible with SkillHub. Use the SkillHub CLI above for publishing.
 
 3. **Publish via Web UI**
 
@@ -94,6 +115,45 @@ Team admins receive review notifications and approve skill packages for official
 7. **Publish Success**
 
 Skill package can be discovered through search, others can download via CLI or Web UI.
+
+## Compliance Declarations
+
+Skill authors can add `x-astron-compliance` to the `SKILL.md` frontmatter to declare how a skill version maps to compliance standards, controls, or security knowledge-base entries.
+
+```yaml
+---
+name: incident-response-helper
+description: Helps analysts draft incident response steps.
+x-astron-compliance:
+  - standard: mitre-attack
+    version: "v19.1"
+    controlId: T1059
+    title: Command and Scripting Interpreter
+    evidence:
+      - type: packaged-file
+        path: references/mitre-t1059.md
+      - type: external-url
+        url: https://attack.mitre.org/techniques/T1059/
+---
+```
+
+Important boundaries:
+
+- This is an author declaration, not a SkillHub endorsement or third-party certification.
+- SkillHub validates the structure, duplicate mappings, packaged evidence paths, and external URL format.
+- After publishing, the declaration is normalized into the version-level `complianceSnapshot` with a stable `digest`.
+- Review pages show the diff when a later version adds, removes, or changes compliance declarations.
+- Searching for `mitre-attack`, `T1059`, or the declaration title can discover the matching skill.
+
+Field reference:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `standard` | Yes | Standard or framework identifier, such as `mitre-attack`, `nist-csf`, or `soc2` |
+| `version` | Yes | Standard version |
+| `controlId` | Yes | Control, technique, or clause ID |
+| `title` | No | Human-readable control title; recommended for review and search |
+| `evidence` | No | Evidence list, supporting packaged files and external URLs |
 
 ## API Reference
 

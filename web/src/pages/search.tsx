@@ -12,6 +12,7 @@ import { Pagination } from '@/shared/components/pagination'
 import { useSearchSkills } from '@/shared/hooks/use-skill-queries'
 import { useVisibleLabels } from '@/shared/hooks/use-label-queries'
 import { useMyStars } from '@/shared/hooks/use-user-queries'
+import { toRouterPath } from '@/shared/lib/base-path'
 import { formatNamespaceSearchInput, normalizeSearchQuery, parseNamespaceSearchInput } from '@/shared/lib/search-query'
 import { Button } from '@/shared/ui/button'
 import { APP_SHELL_PAGE_CLASS_NAME } from '@/app/page-shell-style'
@@ -125,37 +126,13 @@ export function SearchPage() {
     page,
     size: PAGE_SIZE,
     starredOnly,
-  })
+  }, !starredOnly)
   const { data: labels } = useVisibleLabels()
   const {
     data: starredSkills,
     isLoading: isLoadingStarred,
     isFetching: isFetchingStarred,
   } = useMyStars(starredOnly && isAuthenticated)
-  useEffect(() => {
-    // Debounce URL updates while the user is typing so query state stays shareable without
-    // triggering a navigation on every keystroke.
-    const parsedInput = parseNamespaceSearchInput(queryInput)
-    if (parsedInput.query === q && parsedInput.namespace === namespace) {
-      return
-    }
-
-    if (!parsedInput.query && !parsedInput.namespace) {
-      startTransition(() => {
-        navigate({ to: '/search', search: { q: '', namespace: '', label: selectedLabel, sort, page: 0, starredOnly }, replace: page === 0 })
-      })
-      return
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      startTransition(() => {
-        navigate({ to: '/search', search: { q: parsedInput.query, namespace: parsedInput.namespace, label: selectedLabel, sort, page: 0, starredOnly }, replace: true })
-      })
-    }, 250)
-
-    return () => window.clearTimeout(timeoutId)
-  }, [navigate, namespace, page, q, queryInput, selectedLabel, sort, starredOnly])
-
   const handleSearch = (query: string) => {
     const parsedInput = parseNamespaceSearchInput(query)
     setQueryInput(query)
@@ -187,7 +164,7 @@ export function SearchPage() {
       navigate({
         to: '/login',
         search: {
-          returnTo: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+          returnTo: toRouterPath(window.location.pathname, window.location.search, window.location.hash),
         },
       })
       return
@@ -197,7 +174,10 @@ export function SearchPage() {
   }
 
   const handleSkillClick = (namespace: string, slug: string) => {
-    navigate({ to: `/space/${namespace}/${encodeURIComponent(slug)}`, search: { returnTo: `${window.location.pathname}${window.location.search}` } })
+    navigate({
+      to: `/space/${namespace}/${encodeURIComponent(slug)}`,
+      search: { returnTo: toRouterPath(window.location.pathname, window.location.search) },
+    })
   }
 
   const filteredStarredSkills = starredOnly
@@ -211,10 +191,16 @@ export function SearchPage() {
     : data
       ? Math.ceil(data.total / data.size)
       : 0
-  const displayItems = starredOnly ? starredPageItems : (data?.items ?? [])
+  const displayItems = starredOnly
+    ? starredPageItems
+    : (data?.items ?? [])
   const isPageLoading = starredOnly ? isLoadingStarred : isLoading
-  const isUpdatingResults = starredOnly ? isFetchingStarred && !isLoadingStarred : isFetching && !isLoading
-  const resultCount = starredOnly ? filteredStarredSkills.length : (data?.total ?? 0)
+  const isUpdatingResults = starredOnly
+    ? isFetchingStarred && !isLoadingStarred
+    : isFetching && !isLoading
+  const resultCount = starredOnly
+    ? filteredStarredSkills.length
+    : (data?.total ?? 0)
 
   return (
     <div className={APP_SHELL_PAGE_CLASS_NAME}>
@@ -231,9 +217,9 @@ export function SearchPage() {
       {/* Sort And Filters */}
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             <span className="text-sm font-medium text-muted-foreground">{t('search.sort.label')}</span>
-            <div className="flex gap-2">
+            <div className="flex max-w-full flex-wrap gap-2">
               <Button
                 variant={sort === 'relevance' ? 'default' : 'outline'}
                 size="sm"
@@ -272,8 +258,8 @@ export function SearchPage() {
           </div>
         ) : null}
 
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-muted-foreground">{t('search.filters.label')}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="shrink-0 text-sm font-medium text-muted-foreground">{t('search.filters.label')}</span>
           <Button
             variant={starredOnly ? 'default' : 'outline'}
             size="sm"

@@ -8,6 +8,8 @@ import com.iflytek.skillhub.domain.namespace.NamespaceService;
 import com.iflytek.skillhub.domain.skill.Skill;
 import com.iflytek.skillhub.domain.skill.SkillRepository;
 import com.iflytek.skillhub.domain.skill.service.SkillLifecycleProjectionService;
+import com.iflytek.skillhub.domain.user.UserAccount;
+import com.iflytek.skillhub.domain.user.UserAccountRepository;
 import com.iflytek.skillhub.dto.SkillSummaryResponse;
 import com.iflytek.skillhub.search.SearchQuery;
 import com.iflytek.skillhub.search.SearchQueryService;
@@ -18,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -36,7 +39,9 @@ public class SkillSearchAppService {
     private final NamespaceRepository namespaceRepository;
     private final NamespaceService namespaceService;
     private final SkillLifecycleProjectionService skillLifecycleProjectionService;
+    private final ComplianceSnapshotProjectionService complianceSnapshotProjectionService;
     private final RbacService rbacService;
+    private final UserAccountRepository userAccountRepository;
 
     public SkillSearchAppService(
             SearchQueryService searchQueryService,
@@ -45,12 +50,36 @@ public class SkillSearchAppService {
             NamespaceService namespaceService,
             SkillLifecycleProjectionService skillLifecycleProjectionService,
             RbacService rbacService) {
+        this(
+                searchQueryService,
+                skillRepository,
+                namespaceRepository,
+                namespaceService,
+                skillLifecycleProjectionService,
+                new ComplianceSnapshotProjectionService(new com.fasterxml.jackson.databind.ObjectMapper()),
+                rbacService,
+                null
+        );
+    }
+
+    @Autowired
+    public SkillSearchAppService(
+            SearchQueryService searchQueryService,
+            SkillRepository skillRepository,
+            NamespaceRepository namespaceRepository,
+            NamespaceService namespaceService,
+            SkillLifecycleProjectionService skillLifecycleProjectionService,
+            ComplianceSnapshotProjectionService complianceSnapshotProjectionService,
+            RbacService rbacService,
+            UserAccountRepository userAccountRepository) {
         this.searchQueryService = searchQueryService;
         this.skillRepository = skillRepository;
         this.namespaceRepository = namespaceRepository;
         this.namespaceService = namespaceService;
         this.skillLifecycleProjectionService = skillLifecycleProjectionService;
+        this.complianceSnapshotProjectionService = complianceSnapshotProjectionService;
         this.rbacService = rbacService;
+        this.userAccountRepository = userAccountRepository;
     }
 
     public record SearchResponse(
@@ -192,21 +221,33 @@ public class SkillSearchAppService {
                 .collect(Collectors.toMap(Namespace::getId, Function.identity()));
         Map<Long, String> namespaceSlugsById = namespacesById.entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().getSlug()));
+        Map<String, UserAccount> ownersById = userAccountRepository == null
+                ? Map.of()
+                : userAccountRepository.findByIdIn(matchedSkills.stream().map(Skill::getOwnerId).distinct().toList())
+                .stream().collect(Collectors.toMap(UserAccount::getId, Function.identity()));
         Map<Long, SkillLifecycleProjectionService.Projection> projectionsBySkillId =
                 skillLifecycleProjectionService.projectPublishedSummaries(matchedSkills);
 
         return skillIds.stream()
                 .map(skillsById::get)
                 .filter(java.util.Objects::nonNull)
-                .map(skill -> toSummaryResponse(skill, namespaceSlugsById, projectionsBySkillId.get(skill.getId())))
+                .map(skill -> toSummaryResponse(
+                        skill,
+                        namespaceSlugsById,
+                        ownersById,
+                        projectionsBySkillId.get(skill.getId())
+                ))
                 .toList();
     }
 
     private SkillSummaryResponse toSummaryResponse(
             Skill skill,
             Map<Long, String> namespaceSlugsById,
+            Map<String, UserAccount> ownersById,
             SkillLifecycleProjectionService.Projection projection) {
         String namespaceSlug = namespaceSlugsById.get(skill.getNamespaceId());
+        UserAccount owner = ownersById.get(skill.getOwnerId());
+        SkillLifecycleProjectionService.VersionProjection headlineVersion = projection.headlineVersion();
 
         return new SkillSummaryResponse(
                 skill.getId(),
@@ -221,11 +262,19 @@ public class SkillSearchAppService {
                 skill.getRatingCount(),
                 namespaceSlug,
                 skill.getUpdatedAt(),
+                skill.getOwnerId(),
+                owner != null
+                        ? owner.getDisplayName()
+                        : null,
                 false,
                 toLifecycleVersion(projection.headlineVersion()),
                 toLifecycleVersion(projection.publishedVersion()),
                 toLifecycleVersion(projection.ownerPreviewVersion()),
-                projection.resolutionMode().name()
+                projection.resolutionMode().name(),
+                headlineVersion != null
+                        ? complianceSnapshotProjectionService.fromParsedMetadataJson(headlineVersion.parsedMetadataJson())
+                        : null,
+                null
         );
     }
 

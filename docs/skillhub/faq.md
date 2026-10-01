@@ -65,8 +65,10 @@ npx clawhub search email
 # 安装技能包
 npx clawhub install my-skill
 
-# 发布技能包
-npx clawhub publish ./my-skill
+# 发布技能包（ClawHub CLI 的发布协议不兼容 SkillHub）
+export SKILLHUB_REGISTRY=http://your-skillhub-host:8080
+export SKILLHUB_TOKEN=YOUR_API_TOKEN
+npx @astron-team/skillhub@latest publish ./my-skill
 ```
 
 ## Q: 如何配置 HTTPS？
@@ -138,7 +140,13 @@ A: 使用 OpenClaw CLI 命令行工具时，可以通过 `<namespace>--<skill-na
 
 ## Q: 推荐的部署方式是什么？可以自己拉镜像手动部署吗？
 
-A: 推荐使用官方一键部署脚本，不建议自己拉取镜像手动部署（手动部署容易出现登录后跳回登录页等初始化问题）：
+A: 推荐使用官方一键部署脚本，不建议自己拉取镜像手动部署（手动部署容易出现数据库初始化、依赖顺序或登录后跳回登录页等问题）。默认从公共镜像仓库拉取依赖，其中 SkillHub 应用镜像来自 GHCR：
+
+```bash
+curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --public-url https://skillhub.your-company.com
+```
+
+国内网络无法访问 GHCR 时，使用阿里云镜像：
 
 ```bash
 curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --aliyun --public-url https://skillhub.your-company.com --version latest
@@ -156,10 +164,18 @@ A: 该现象多见于「手动部署」场景（接口异常或初始化未完�
 
 ## Q: 如何修改 admin 密码？修改配置后不生效？
 
-A: 环境变量在容器启动时读取，修改后必须重启容器才会生效。
+A: 环境变量在容器创建时注入，修改后必须重新创建容器才会生效；仅执行 `restart` 不会重新注入环境变量。
 
 1. 修改运行时目录下的 `/tmp/skillhub-runtime/.env.release`（参考仓库 [.env.release.example](https://github.com/iflytek/skillhub/blob/main/.env.release.example)）。
-2. 重启相关容器。
+2. 重新创建相关容器：
+
+   ```bash
+   docker compose \
+     --env-file /tmp/skillhub-runtime/.env.release \
+     -f /tmp/skillhub-runtime/compose.release.yml \
+     up -d --force-recreate
+   ```
+
 3. 若此前密码已写入数据库导致仍不生效，可能需要清理对应数据后重新初始化。
 
 ## Q: 修改 / 找回密码必须使用邮箱验证码吗？
@@ -174,9 +190,17 @@ A: skill name 一般使用英文，目前不支持中文名（在 OpenClaw 中�
 
 A: 只要拥有可查看的权限，一般都可以下载。
 
-## Q: 如何隐藏或删除登录页的 GitHub / GitLab SSO 登录方式？
+## Q: 如何隐藏或删除登录页的第三方 SSO 登录方式？
 
-A: 修改 `application.yml`，注释或删除 `spring.security.oauth2.client.registration` 下的 `github` 和 `gitlab` 两块，并删除对应的 `provider` 段。Spring Boot 启动时便不会创建这两个注册，登录页也不会再显示对应入口。
+A: 登录入口是配置驱动的：`/api/v1/auth/methods` 只返回配置了真实 client id 的
+注册，client id 为空或包含 `placeholder` 时该入口不会出现在登录页。
+
+所以隐藏某个入口有两种方式：
+
+- 留空对应的环境变量即可（例如不设置 `OAUTH2_FEISHU_CLIENT_ID`），无需改动配置文件。
+- 或修改 `application.yml`，注释/删除 `spring.security.oauth2.client.registration`
+  下对应的注册块（`github`、`gitlab`、`feishu`、`dingtalk`）以及对应的 `provider` 段，
+  Spring Boot 启动时便不会创建该注册。
 
 ## Q: SkillHub 的安全扫描（Skill Scanner）是讯飞自研的吗？使用什么协议？
 
@@ -184,7 +208,23 @@ A: SkillHub 内置安全扫描能力。其中扫描接入、任务编排、审�
 
 ## Q: SkillHub 使用的 cisco-ai-skill-scanner 是哪个版本？
 
-A: `scanner/Dockerfile` 中直接执行 `pip install cisco-ai-skill-scanner`，未锁定版本，因此构建镜像时会拉取 PyPI 上的最新版本。如需固定版本，可在二次开发时自行锁定。
+A: `scanner/Dockerfile` 已固定使用 `cisco-ai-skill-scanner==2.1.0`。Scanner 镜像基于 glibc Linux，支持 `linux/amd64` 和 `linux/arm64`。
+
+## Q: Scanner 应该使用 upload mode 还是 local mode？
+
+A: 官方 Compose 和 Kubernetes 部署使用 `upload` mode，通过 `POST /scan-upload` 上传技能包。上传大小上限由 `SKILLHUB_SCANNER_MAX_UPLOAD_SIZE_BYTES` 控制，默认是 `110100480` 字节（105 MiB）。
+
+`local` mode 仅适用于 Server 与 Scanner 能在**相同路径**看到同一目录的部署。双方需要共享挂载路径，并在 Scanner 中设置允许的根目录；使用标准路径时配置 `SKILL_SCANNER_ALLOWED_ROOTS=/tmp/skillhub-scans`。
+
+## Q: 安全审计显示“未发现高风险问题”，是否代表没有任何 findings？
+
+A: 不是。Scanner 返回 `is_safe=true`、UI 显示“未发现高风险问题”，仅表示没有发现高风险问题；低等级 findings 仍可能存在，`findingsCount` 也可能大于 0。请继续查看 findings 明细，而不要把该状态理解为无条件安全保证。
+
+## Q: 如何滚动升级到 Scanner 2.1.0？
+
+A: 必须先部署兼容 2.1.0 协议的 Server，在旧 Scanner 仍运行时排空并下线所有旧 Server 实例及其进行中的扫描，然后再升级 Scanner，最后验证 `/health` 和一次 upload mode 扫描。不要让旧 Server 连接 Scanner 2.1.0。
+
+混合版本期间，upload 和 local mode 都应保持 AI Defense 关闭（默认 `SKILLHUB_SCANNER_USE_AI_DEFENSE=false`）。如果升级前必须继续使用 AI Defense，应按旧 Scanner 版本支持的环境变量把凭据直接配置到旧 Scanner 环境中；不要把 AI Defense key 放入 URL query 参数或请求体。
 
 ## Q: 使用 CLI `skillhub publish` 报错 `registry returned 400` 怎么排查？
 
@@ -219,7 +259,7 @@ A: 默认上限为 **100 个文件**（这与 100MB 的大小限制是两回事�
 SKILLHUB_PUBLISH_MAX_FILE_COUNT=500
 ```
 
-修改后需重启容器生效。注意 `compose.release.yml` 中也需引用该变量；较旧版本（如 v0.2.6）可能将该值写死，建议升级到最新版本。
+修改后需重新创建容器才会生效；仅执行 `restart` 不会重新注入环境变量。注意 `compose.release.yml` 中也需引用该变量；较旧版本（如 v0.2.6）可能将该值写死，建议升级到最新版本。
 
 ## Q: 使用 CLI（发布 / 下载等）对服务端版本有要求吗？
 
@@ -245,6 +285,86 @@ docker image inspect ghcr.io/iflytek/skillhub-server:latest --format '{{index .C
 
 - 查看 CLI 版本：`skillhub version`。
 - 如需定制（如修改 logo 等），建议基于最新代码进行二次开发并自行构建 docker 镜像。
+
+## Q: 页面能打开，但登录 / 注册接口返回 502？
+
+A: 页面由 `web` 容器提供，登录、注册等接口由 `web` 转发给 `server`（默认 `SKILLHUB_API_UPSTREAM=http://server:8080`）。出现「页面正常但 API 502」时，通常先检查 `server` 是否正常启动；upstream 配置、DNS 或容器网络异常也可能返回 502。
+
+排查顺序：
+
+```bash
+# 1. 看 server 是否处于运行状态
+docker compose --env-file .env.release -f compose.release.yml ps
+
+# 2. 看 server 启动日志中的第一条错误
+docker compose --env-file .env.release -f compose.release.yml logs server | head -50
+```
+
+一条常见的启动失败日志是：
+
+```
+SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET must not use the default placeholder
+```
+
+说明 `server` 读到的仍是模板里的占位值。在 `.env.release` 中改成自己的随机字符串（**至少 32 个字符**）后重建容器即可：
+
+```bash
+SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET=<替换成你自己的随机字符串，至少 32 个字符>
+```
+
+启动前可以先执行 `make validate-release-config`，它会校验 `.env.release`，提前暴露这类占位值和缺失项。
+
+## Q: 改了配置为什么不生效？
+
+A: 两个高频原因：
+
+1. **改错了文件**：`.env.release.example` 只是模板，Compose 实际读取的是 `--env-file` 指定的 `.env.release`。请先 `cp .env.release.example .env.release`，然后修改 `.env.release`。
+2. **只重启没重建**：环境变量在容器创建时注入，`restart` 不会重新注入。改完配置需要重建容器：
+
+```bash
+docker compose --env-file .env.release -f compose.release.yml up -d --force-recreate
+```
+
+## Q: SkillHub 运行时需要哪些外部依赖？
+
+A: 必需 PostgreSQL 和 Redis；对象存储支持 `local` 与 S3 两种模式，由 `SKILLHUB_STORAGE_PROVIDER` 控制。`.env.release.example` 显式配置为 `local`，但如果使用 `compose.release.yml` 时完全没有设置该变量，Compose 的回退值是 `s3`。建议始终显式设置；生产环境推荐使用 S3（通过 `SKILLHUB_STORAGE_S3_*` 配置）。数据库仅支持 PostgreSQL，暂不支持 MySQL。
+
+发布版 Compose 已内置 PostgreSQL 与 Redis，默认只绑定在 `127.0.0.1`。
+
+## Q: PostgreSQL 容器写入 `postmaster.pid` 或 `pg_wal` 时报告 `operation not permitted` 怎么办？
+
+A: SkillHub 默认的 Compose 和 `runtime.sh` 使用 Docker named volume（`postgres_data`），通常不需要手工处理宿主机目录权限。这个错误更常见于将 PostgreSQL 数据目录改成宿主机 bind mount，例如 `/data/skillhub/postgres:/var/lib/postgresql/data`。
+
+按以下顺序排查：
+
+1. 优先恢复为 Docker named volume，或使用官方 `runtime.sh`，避免手写 Compose 时漏配权限。
+2. 如果必须使用 bind mount，先确认 `.env.release` 或 `runtime.sh` 参数最终选择的 `POSTGRES_IMAGE`，将该值导出到当前 shell 后运行 `docker run --rm "$POSTGRES_IMAGE" id postgres`。再按输出的实际 UID/GID 调整数据目录属主，例如 `chown -R <uid>:<gid> <数据目录>`。不要固定假设镜像是 `postgres:16-alpine`，也不要假设所有环境都是 `999:999`。
+3. 在 RHEL/CentOS 上检查 SELinux；使用 AppArmor、rootless Docker、NFS、CIFS 或 NAS 时，也要确认宿主文件系统允许 PostgreSQL 写入、加锁和更改权限。
+4. 不建议把 PostgreSQL `PGDATA` 放在缺少完整 POSIX 权限语义的网络文件系统上。生产环境优先使用本地盘、Docker named volume、块存储或外部 PostgreSQL。
+
+## Q: 通过 OAuth（GitHub / GitLab 等）登录的账号，如何取得管理员权限？
+
+A: OAuth 首次登录创建的是普通用户。需要由已有的 `SUPER_ADMIN`（例如初始化时的 bootstrap admin）在后台将其提升为管理员。
+
+`USER_ADMIN` 可以管理用户状态，并分配除 `SUPER_ADMIN` 之外的平台角色；但不能向任何账号授予 `SUPER_ADMIN`，也不能修改已有 `SUPER_ADMIN` 账号的角色。这两类操作只有 `SUPER_ADMIN` 可以执行。
+
+## Q: 如何批量安装多个技能包？
+
+A: CLI 的 `install` 一次处理一个技能包。下面两个示例都通过 `--dir` 将技能批量安装到同一个目标根目录；每个技能实际位于 `$target_dir/<skill-slug>/`：
+
+```bash
+target_dir=/opt/skillhub-skills
+
+# 逐个安装
+for skill in skill-a skill-b skill-c; do
+  skillhub install "$skill" --dir "$target_dir"
+done
+
+# 或从清单文件读取（每行一个技能名）
+xargs -a skills.txt -I {} skillhub install "{}" --dir "$target_dir"
+```
+
+自 **SkillHub Server v0.2.12** 起，公开技能支持匿名搜索与安装；如果配置了无效的 Bearer Token，命令会直接失败而不再回退匿名访问，遇到这种情况请更新凭据或先移除无效 Token。
 
 ## Q: 遇到问题怎么办？
 

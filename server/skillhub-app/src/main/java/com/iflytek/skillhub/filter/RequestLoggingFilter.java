@@ -8,15 +8,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingRequestWrapper;
 import org.springframework.web.util.ContentCachingResponseWrapper;
 
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -27,25 +25,14 @@ import java.util.Set;
 public class RequestLoggingFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
-    private static final int MAX_LOG_BODY_LENGTH = 200;
-
     private static final Set<String> SKIP_PREFIXES = Set.of(
             "/actuator", "/favicon.ico", "/assets/"
     );
-    private static final Set<String> SKIP_SUFFIXES = Set.of(
-            "/sse"
-    );
-
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
         String uri = request.getRequestURI();
-        if (isNotificationSse(uri)) {
-            prepareSseResponse(response);
-            filterChain.doFilter(request, response);
-            return;
-        }
         if (shouldSkip(uri)) {
             filterChain.doFilter(request, response);
             return;
@@ -68,7 +55,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     private void logRequest(ContentCachingRequestWrapper request, ContentCachingResponseWrapper response, long duration) {
         String requestUri = request.getRequestURI();
         String queryString = request.getQueryString();
-        String fullUrl = queryString != null ? requestUri + "?" + queryString : requestUri;
+        String fullUrl = queryString != null ? requestUri + "?" + sanitizeQueryString(queryString) : requestUri;
 
         String contentType = request.getContentType();
         String userAgent = request.getHeader("User-Agent");
@@ -85,12 +72,27 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             sb.append(" | UA: ").append(truncate(userAgent, 80));
         }
 
-        String requestBody = getRequestBody(request);
-        if (requestBody != null && !requestBody.isBlank()) {
-            sb.append(" | Body: ").append(requestBody);
-        }
-
         log.info(sb.toString());
+    }
+
+    private String sanitizeQueryString(String queryString) {
+        return java.util.Arrays.stream(queryString.split("&", -1))
+                .map(parameter -> {
+                    int separator = parameter.indexOf('=');
+                    if (separator < 0) {
+                        return parameter;
+                    }
+                    String name = parameter.substring(0, separator).toLowerCase(Locale.ROOT);
+                    return isSensitiveQueryParameter(name)
+                            ? parameter.substring(0, separator) + "=[REDACTED]"
+                            : parameter;
+                })
+                .collect(java.util.stream.Collectors.joining("&"));
+    }
+
+    private boolean isSensitiveQueryParameter(String name) {
+        return Set.of("code", "state", "error", "error_description", "error_uri", "access_token",
+                "refresh_token", "id_token", "client_secret").contains(name);
     }
 
     private boolean shouldSkip(String uri) {
@@ -99,34 +101,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
                 return true;
             }
         }
-        for (String suffix : SKIP_SUFFIXES) {
-            if (uri.endsWith(suffix)) {
-                return true;
-            }
-        }
         return false;
-    }
-
-    private boolean isNotificationSse(String uri) {
-        return uri != null && uri.endsWith("/notifications/sse");
-    }
-
-    private void prepareSseResponse(HttpServletResponse response) {
-        response.setContentType(MediaType.TEXT_EVENT_STREAM_VALUE);
-        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform");
-        response.setHeader("X-Accel-Buffering", "no");
-    }
-
-    private String getRequestBody(ContentCachingRequestWrapper request) {
-        byte[] buf = request.getContentAsByteArray();
-        if (buf.length > 0) {
-            try {
-                return truncate(new String(buf, request.getCharacterEncoding()), MAX_LOG_BODY_LENGTH);
-            } catch (UnsupportedEncodingException e) {
-                return "[unknown encoding]";
-            }
-        }
-        return null;
     }
 
     private String truncate(String value, int maxLength) {

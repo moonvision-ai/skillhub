@@ -1,12 +1,4 @@
-// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { createElement } from 'react'
-import type { ReactNode } from 'react'
-
-// CliAuthPage has internal helpers isValidRedirectUri and decodeLabel which are
-// not exported. We test the component render paths and validate the redirect
-// URI logic via the rendered error states.
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
@@ -27,41 +19,61 @@ vi.mock('@/shared/ui/card', () => ({
 }))
 
 vi.mock('@/shared/ui/button', () => ({
-  Button: ({ children, onClick }: { children: ReactNode, onClick?: () => void }) => createElement('button', { onClick }, children),
-}))
-
-const apiMocks = vi.hoisted(() => ({
-  getCurrentUser: vi.fn().mockResolvedValue({ id: 'u1', handle: 'sam', displayName: 'Sam' }),
-  createToken: vi.fn().mockImplementation(() => new Promise(() => {})),
+  Button: ({ children }: { children: unknown }) => children,
 }))
 
 vi.mock('@/api/client', () => ({
-  getCurrentUser: apiMocks.getCurrentUser,
-  tokenApi: { createToken: apiMocks.createToken },
+  getAppBaseUrl: vi.fn().mockReturnValue(''),
+  getCurrentUser: vi.fn().mockResolvedValue(null),
+  tokenApi: { createToken: vi.fn() },
 }))
 
 vi.mock('@/app/router', () => ({
-  ORIGINAL_URL_SEARCH: 'redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback&state=secure-state&allow_delete=true',
+  ORIGINAL_URL_SEARCH: '',
 }))
 
-import { CliAuthPage } from './cli-auth'
+import { CliAuthPage, resolveCliRegistryUrl, resolveLoopbackRedirectUri } from './cli-auth'
+
+describe('resolveLoopbackRedirectUri', () => {
+  it.each([
+    'http://localhost:4312/callback?source=cli',
+    'http://127.0.0.1:4312/callback',
+    'http://[::1]:4312/callback',
+  ])('accepts an HTTP loopback callback: %s', (uri) => {
+    expect(resolveLoopbackRedirectUri(uri)?.href).toBe(uri)
+  })
+
+  it.each([
+    'https://localhost:4312/callback',
+    'http://localhost.example.com/callback',
+    'http://example.com/callback',
+    'http://user:password@localhost:4312/callback',
+    'javascript:alert(1)',
+    'not-a-url',
+  ])('rejects a non-loopback or unsafe callback: %s', (uri) => {
+    expect(resolveLoopbackRedirectUri(uri)).toBeNull()
+  })
+
+  it('removes an attacker-provided fragment before adding CLI credentials', () => {
+    expect(resolveLoopbackRedirectUri('http://localhost:4312/callback#attacker')?.hash).toBe('')
+  })
+})
+
+describe('resolveCliRegistryUrl', () => {
+  it('uses the configured public base URL for the CLI registry', () => {
+    expect(resolveCliRegistryUrl('https://example.com/skillhub', 'https://example.com', '/skillhub/'))
+      .toBe('https://example.com/skillhub')
+  })
+
+  it('falls back to the browser origin plus the Vite base path', () => {
+    expect(resolveCliRegistryUrl('', 'https://example.com', '/skillhub/'))
+      .toBe('https://example.com/skillhub')
+  })
+})
 
 describe('CliAuthPage', () => {
   it('exports a named component function', () => {
     expect(typeof CliAuthPage).toBe('function')
     expect(CliAuthPage.name).toBe('CliAuthPage')
-  })
-
-  it('requires explicit consent before creating a delete-capable token', async () => {
-    render(createElement(CliAuthPage))
-
-    expect(await screen.findByText('cliAuth.deleteConsentTitle')).toBeTruthy()
-    expect(apiMocks.createToken).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByText('cliAuth.deleteConsentConfirm'))
-    await waitFor(() => expect(apiMocks.createToken).toHaveBeenCalledWith({
-      name: 'CLI token',
-      scopes: ['skill:read', 'skill:publish', 'skill:delete'],
-    }))
   })
 })

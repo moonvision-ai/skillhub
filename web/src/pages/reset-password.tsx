@@ -89,7 +89,7 @@ export function ResetPasswordPage() {
 
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-2xl items-center justify-center">
-      <Card className="w-full border-slate-200 bg-white/95 shadow-xl">
+      <Card className="w-full border-border bg-card/95 shadow-xl">
         <CardHeader className="space-y-3 text-center">
           <CardTitle>{t('resetPassword.title')}</CardTitle>
           <CardDescription>{t('resetPassword.subtitle')}</CardDescription>
@@ -100,7 +100,7 @@ export function ResetPasswordPage() {
               <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                 {t('resetPassword.successMessage')}
               </p>
-              <Link to="/login" search={{ returnTo: '' }} className="block text-center font-medium text-primary hover:underline">
+              <Link to="/login" className="block text-center font-medium text-primary hover:underline">
                 {t('resetPassword.backToLogin')}
               </Link>
             </div>

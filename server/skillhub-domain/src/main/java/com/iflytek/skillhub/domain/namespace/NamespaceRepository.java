@@ -11,7 +11,10 @@ import java.util.Optional;
  */
 public interface NamespaceRepository {
     Optional<Namespace> findById(Long id);
+    List<Namespace> findAll();
     List<Namespace> findByIdIn(List<Long> ids);
+    List<Namespace> findBySlugIn(List<String> slugs);
+    Page<Namespace> findByIdIn(List<Long> ids, Pageable pageable);
     Optional<Namespace> findBySlug(String slug);
     Page<Namespace> findByStatus(NamespaceStatus status, Pageable pageable);
     Namespace save(Namespace namespace);

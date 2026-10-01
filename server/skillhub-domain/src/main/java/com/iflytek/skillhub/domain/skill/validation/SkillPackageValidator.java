@@ -1,11 +1,14 @@
 package com.iflytek.skillhub.domain.skill.validation;
 
 import com.iflytek.skillhub.domain.shared.exception.LocalizedDomainException;
+import com.iflytek.skillhub.domain.skill.metadata.ComplianceMetadataService;
+import com.iflytek.skillhub.domain.skill.metadata.SkillMetadata;
 import com.iflytek.skillhub.domain.skill.metadata.SkillMetadataParser;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -18,6 +21,7 @@ public class SkillPackageValidator {
     private static final Pattern YAML_LINE_COLUMN = Pattern.compile("line\\s+(\\d+),\\s+column\\s+(\\d+)");
 
     private final SkillMetadataParser metadataParser;
+    private final ComplianceMetadataService complianceMetadataService;
     private final int maxFileCount;
     private final long maxSingleFileSize;
     private final long maxTotalPackageSize;
@@ -26,6 +30,7 @@ public class SkillPackageValidator {
     public SkillPackageValidator(SkillMetadataParser metadataParser) {
         this(
                 metadataParser,
+                new ComplianceMetadataService(),
                 SkillPackagePolicy.MAX_FILE_COUNT,
                 SkillPackagePolicy.MAX_SINGLE_FILE_SIZE,
                 SkillPackagePolicy.MAX_TOTAL_PACKAGE_SIZE,
@@ -38,12 +43,29 @@ public class SkillPackageValidator {
                                  long maxSingleFileSize,
                                  long maxTotalPackageSize,
                                  Set<String> allowedExtensions) {
+        this(
+                metadataParser,
+                new ComplianceMetadataService(),
+                maxFileCount,
+                maxSingleFileSize,
+                maxTotalPackageSize,
+                allowedExtensions
+        );
+    }
+
+    public SkillPackageValidator(SkillMetadataParser metadataParser,
+                                 ComplianceMetadataService complianceMetadataService,
+                                 int maxFileCount,
+                                 long maxSingleFileSize,
+                                 long maxTotalPackageSize,
+                                 Set<String> allowedExtensions) {
         this.metadataParser = metadataParser;
+        this.complianceMetadataService = complianceMetadataService;
         this.maxFileCount = maxFileCount;
         this.maxSingleFileSize = maxSingleFileSize;
         this.maxTotalPackageSize = maxTotalPackageSize;
         this.allowedExtensions = allowedExtensions.stream()
-                .map(String::toLowerCase)
+                .map(extension -> extension.toLowerCase(Locale.ROOT))
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
@@ -89,7 +111,8 @@ public class SkillPackageValidator {
         // 2. Validate frontmatter
         try {
             String content = new String(skillMd.content());
-            metadataParser.parse(content);
+            SkillMetadata metadata = metadataParser.parse(content);
+            errors.addAll(complianceMetadataService.validate(metadata.frontmatter(), entries));
         } catch (LocalizedDomainException e) {
             errors.add("Invalid SKILL.md frontmatter: " + formatMetadataError(e));
         }
@@ -116,7 +139,8 @@ public class SkillPackageValidator {
     }
 
     private boolean hasAllowedExtension(String normalizedPath) {
-        return allowedExtensions.stream().anyMatch(normalizedPath::endsWith);
+        String lowercasePath = normalizedPath.toLowerCase(Locale.ROOT);
+        return allowedExtensions.stream().anyMatch(lowercasePath::endsWith);
     }
 
     private String formatMetadataError(LocalizedDomainException exception) {

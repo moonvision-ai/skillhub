@@ -26,6 +26,9 @@ public class SecurityAudit {
     @Column(name = "skill_version_id", nullable = false)
     private Long skillVersionId;
 
+    @Column(name = "task_id", length = 100)
+    private String taskId;
+
     @Column(name = "scan_id", length = 100)
     private String scanId;
 
@@ -53,6 +56,9 @@ public class SecurityAudit {
     @Column(name = "scan_duration_seconds")
     private Double scanDurationSeconds;
 
+    @Column(name = "failure_reason", length = 1000)
+    private String failureReason;
+
     @Column(name = "scanned_at")
     private Instant scannedAt;
 
@@ -66,8 +72,13 @@ public class SecurityAudit {
     }
 
     public SecurityAudit(Long skillVersionId, ScannerType scannerType) {
+        this(skillVersionId, scannerType, null);
+    }
+
+    public SecurityAudit(Long skillVersionId, ScannerType scannerType, String taskId) {
         this.skillVersionId = skillVersionId;
         this.scannerType = scannerType;
+        this.taskId = taskId;
         this.verdict = SecurityVerdict.SUSPICIOUS;
         this.isSafe = false;
         this.findingsCount = 0;
@@ -89,6 +100,10 @@ public class SecurityAudit {
 
     public String getScanId() {
         return scanId;
+    }
+
+    public String getTaskId() {
+        return taskId;
     }
 
     public ScannerType getScannerType() {
@@ -117,6 +132,10 @@ public class SecurityAudit {
 
     public Double getScanDurationSeconds() {
         return scanDurationSeconds;
+    }
+
+    public String getFailureReason() {
+        return failureReason;
     }
 
     public Instant getScannedAt() {
@@ -157,6 +176,18 @@ public class SecurityAudit {
 
     public void setScannedAt(Instant scannedAt) {
         this.scannedAt = scannedAt;
+    }
+
+    public void markFailed(Instant failedAt, String reason) {
+        this.failureReason = truncate(reason, 1000);
+        this.scannedAt = failedAt;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     public Instant getDeletedAt() {

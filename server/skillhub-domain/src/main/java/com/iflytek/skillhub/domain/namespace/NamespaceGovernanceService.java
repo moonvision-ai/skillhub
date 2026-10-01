@@ -1,5 +1,6 @@
 package com.iflytek.skillhub.domain.namespace;
 
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.shared.exception.DomainBadRequestException;
 import com.iflytek.skillhub.domain.shared.exception.DomainForbiddenException;
@@ -50,6 +51,23 @@ public class NamespaceGovernanceService {
     }
 
     @Transactional
+    public Namespace freezeNamespaceByPlatformAdmin(String slug,
+                                                    String actorUserId,
+                                                    String reason,
+                                                    String requestId,
+                                                    String clientIp,
+                                                    String userAgent) {
+        Namespace namespace = loadNamespaceBySlug(slug);
+        if (namespace.getStatus() != NamespaceStatus.ACTIVE) {
+            throw new DomainBadRequestException("error.namespace.state.transition.invalid", namespace.getSlug());
+        }
+        namespace.setStatus(NamespaceStatus.FROZEN);
+        Namespace updated = namespaceRepository.save(namespace);
+        record("FREEZE_NAMESPACE", actorUserId, updated.getId(), requestId, clientIp, userAgent, reason);
+        return updated;
+    }
+
+    @Transactional
     public Namespace unfreezeNamespace(String slug,
                                        String actorUserId,
                                        String requestId,
@@ -62,6 +80,22 @@ public class NamespaceGovernanceService {
         }
         if (!namespaceAccessPolicy.canUnfreeze(namespace, role)) {
             throw new DomainForbiddenException("error.namespace.lifecycle.forbidden", namespace.getSlug());
+        }
+        namespace.setStatus(NamespaceStatus.ACTIVE);
+        Namespace updated = namespaceRepository.save(namespace);
+        record("UNFREEZE_NAMESPACE", actorUserId, updated.getId(), requestId, clientIp, userAgent, null);
+        return updated;
+    }
+
+    @Transactional
+    public Namespace unfreezeNamespaceByPlatformAdmin(String slug,
+                                                      String actorUserId,
+                                                      String requestId,
+                                                      String clientIp,
+                                                      String userAgent) {
+        Namespace namespace = loadNamespaceBySlug(slug);
+        if (namespace.getStatus() != NamespaceStatus.FROZEN) {
+            throw new DomainBadRequestException("error.namespace.state.transition.invalid", namespace.getSlug());
         }
         namespace.setStatus(NamespaceStatus.ACTIVE);
         Namespace updated = namespaceRepository.save(namespace);
@@ -91,6 +125,23 @@ public class NamespaceGovernanceService {
     }
 
     @Transactional
+    public Namespace archiveNamespaceByPlatformAdmin(String slug,
+                                                     String actorUserId,
+                                                     String reason,
+                                                     String requestId,
+                                                     String clientIp,
+                                                     String userAgent) {
+        Namespace namespace = loadNamespaceBySlug(slug);
+        if (namespace.getStatus() == NamespaceStatus.ARCHIVED) {
+            throw new DomainBadRequestException("error.namespace.state.transition.invalid", namespace.getSlug());
+        }
+        namespace.setStatus(NamespaceStatus.ARCHIVED);
+        Namespace updated = namespaceRepository.save(namespace);
+        record("ARCHIVE_NAMESPACE", actorUserId, updated.getId(), requestId, clientIp, userAgent, reason);
+        return updated;
+    }
+
+    @Transactional
     public Namespace restoreNamespace(String slug,
                                       String actorUserId,
                                       String requestId,
@@ -103,6 +154,22 @@ public class NamespaceGovernanceService {
         }
         if (!namespaceAccessPolicy.canRestore(namespace, role)) {
             throw new DomainForbiddenException("error.namespace.lifecycle.forbidden", namespace.getSlug());
+        }
+        namespace.setStatus(NamespaceStatus.ACTIVE);
+        Namespace updated = namespaceRepository.save(namespace);
+        record("RESTORE_NAMESPACE", actorUserId, updated.getId(), requestId, clientIp, userAgent, null);
+        return updated;
+    }
+
+    @Transactional
+    public Namespace restoreNamespaceByPlatformAdmin(String slug,
+                                                     String actorUserId,
+                                                     String requestId,
+                                                     String clientIp,
+                                                     String userAgent) {
+        Namespace namespace = loadNamespaceBySlug(slug);
+        if (namespace.getStatus() != NamespaceStatus.ARCHIVED) {
+            throw new DomainBadRequestException("error.namespace.state.transition.invalid", namespace.getSlug());
         }
         namespace.setStatus(NamespaceStatus.ACTIVE);
         Namespace updated = namespaceRepository.save(namespace);
@@ -140,7 +207,7 @@ public class NamespaceGovernanceService {
                 requestId,
                 clientIp,
                 userAgent,
-                reason == null || reason.isBlank() ? null : "{\"reason\":\"" + reason.replace("\"", "\\\"") + "\"}"
+                reason == null || reason.isBlank() ? null : AuditDetail.of("reason", reason)
         );
     }
 }

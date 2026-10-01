@@ -1,12 +1,14 @@
 package com.iflytek.skillhub.auth.oauth;
 
 import jakarta.servlet.http.HttpSession;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.user.DefaultOAuth2User;
@@ -21,6 +23,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 class OAuth2LoginHandlersTest {
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void successHandler_redirectsToStoredReturnTo() throws Exception {
@@ -65,11 +72,47 @@ class OAuth2LoginHandlersTest {
         assertThat(securityContext.getAuthentication().getPrincipal()).isEqualTo(principal);
     }
 
+    @Test
+    void successHandler_appliesSubPathPrefixExactlyOnce() throws Exception {
+        OAuthLoginFlowService oauthLoginFlowService = mock(OAuthLoginFlowService.class);
+        OAuth2LoginSuccessHandler handler = new OAuth2LoginSuccessHandler(
+                new com.iflytek.skillhub.auth.session.PlatformSessionService(),
+                oauthLoginFlowService
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        // X-Forwarded-Prefix is reflected into the context path under forward-headers-strategy=framework.
+        request.setContextPath("/skillhub");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        HttpSession session = request.getSession(true);
+        session.setAttribute(OAuthLoginRedirectSupport.SESSION_RETURN_TO_ATTRIBUTE, "/dashboard/publish");
+
+        var principal = new com.iflytek.skillhub.auth.rbac.PlatformPrincipal(
+                "user-1", "User", "user@example.com", null, "github", Set.of()
+        );
+        Authentication authentication = new UsernamePasswordAuthenticationToken(
+                new DefaultOAuth2User(List.of(), Map.of("platformPrincipal", principal, "login", "user"), "login"),
+                null,
+                List.of()
+        );
+        org.mockito.Mockito.when(oauthLoginFlowService.consumeReturnTo(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> {
+                    HttpSession currentSession = invocation.getArgument(0);
+                    Object value = currentSession.getAttribute(OAuthLoginRedirectSupport.SESSION_RETURN_TO_ATTRIBUTE);
+                    currentSession.removeAttribute(OAuthLoginRedirectSupport.SESSION_RETURN_TO_ATTRIBUTE);
+                    return value;
+                });
+
+        handler.onAuthenticationSuccess(request, response, authentication);
+
+        // Prefix applied exactly once by the redirect strategy — not doubled.
+        assertThat(response.getRedirectedUrl()).isEqualTo("/skillhub/dashboard/publish");
+    }
+
     /**
      * Regression test: when an unauthenticated client hits a protected API endpoint, Spring Security
      * caches that request. With {@code SavedRequestAwareAuthenticationSuccessHandler} the post-login
      * redirect would resolve to the cached API URL, leaving the user staring at raw JSON instead of
-     * the dashboard. The handler must ignore the saved request and fall back to the default target.
+     * the product home. The handler must ignore the saved request and fall back to the default target.
      */
     @Test
     void successHandler_ignoresSavedApiRequestAndRedirectsToDefault() throws Exception {
@@ -98,7 +141,7 @@ class OAuth2LoginHandlersTest {
 
         handler.onAuthenticationSuccess(request, response, authentication);
 
-        assertThat(response.getRedirectedUrl()).isEqualTo("/dashboard");
+        assertThat(response.getRedirectedUrl()).isEqualTo("/");
     }
 
     @Test

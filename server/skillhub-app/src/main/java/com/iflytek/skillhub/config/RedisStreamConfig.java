@@ -4,15 +4,17 @@ import com.iflytek.skillhub.domain.security.ScanTaskProducer;
 import com.iflytek.skillhub.domain.security.SecurityScanService;
 import com.iflytek.skillhub.domain.security.SecurityScanner;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
+import com.iflytek.skillhub.observability.MessageObservationSupport;
 import com.iflytek.skillhub.storage.ObjectStorageService;
 import com.iflytek.skillhub.stream.RedissonScanTaskProducer;
 import com.iflytek.skillhub.stream.ScanTaskConsumer;
+import java.time.Clock;
+import java.time.Duration;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import java.time.Duration;
 
 @Configuration
 @ConditionalOnProperty(prefix = "skillhub.security.scanner", name = "enabled", havingValue = "true")
@@ -27,7 +29,7 @@ public class RedisStreamConfig {
     @Value("${skillhub.security.stream.reclaim-enabled:true}")
     private boolean reclaimEnabled;
 
-    @Value("${skillhub.security.stream.reclaim-min-idle:PT2M}")
+    @Value("${skillhub.security.stream.reclaim-min-idle:PT16M}")
     private Duration reclaimMinIdle;
 
     @Value("${skillhub.security.stream.reclaim-batch-size:20}")
@@ -36,9 +38,18 @@ public class RedisStreamConfig {
     @Value("${skillhub.security.stream.reclaim-interval:PT30S}")
     private Duration reclaimInterval;
 
+    @Value("${skillhub.security.scanner.retry-max-attempts:3}")
+    private int maxRetryAttempts;
+
+    @Value("${skillhub.security.stream.max-unavailable-age:PT1H}")
+    private Duration maxUnavailableAge;
+
     @Bean
-    public RedissonScanTaskProducer redisScanTaskProducer(RedissonClient redissonClient) {
-        return new RedissonScanTaskProducer(redissonClient, streamKey);
+    public RedissonScanTaskProducer redisScanTaskProducer(
+            RedissonClient redissonClient,
+            MessageObservationSupport messageObservationSupport
+    ) {
+        return new RedissonScanTaskProducer(redissonClient, streamKey, messageObservationSupport);
     }
 
     @Bean
@@ -47,7 +58,9 @@ public class RedisStreamConfig {
                                              SecurityScanService securityScanService,
                                              SkillVersionRepository skillVersionRepository,
                                              ScanTaskProducer scanTaskProducer,
-                                             ObjectStorageService objectStorageService) {
+                                             ObjectStorageService objectStorageService,
+                                             Clock clock,
+                                             MessageObservationSupport messageObservationSupport) {
         return new ScanTaskConsumer(
                 redissonClient,
                 streamKey,
@@ -60,7 +73,11 @@ public class RedisStreamConfig {
                 reclaimEnabled,
                 reclaimMinIdle,
                 reclaimBatchSize,
-                reclaimInterval
+                reclaimInterval,
+                maxRetryAttempts,
+                maxUnavailableAge,
+                clock,
+                messageObservationSupport
         );
     }
 }

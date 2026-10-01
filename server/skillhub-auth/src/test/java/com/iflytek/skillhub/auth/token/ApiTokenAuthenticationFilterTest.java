@@ -10,6 +10,7 @@ import com.iflytek.skillhub.domain.user.UserAccount;
 import com.iflytek.skillhub.domain.user.UserAccountRepository;
 import com.iflytek.skillhub.domain.user.UserStatus;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -42,6 +43,11 @@ class ApiTokenAuthenticationFilterTest {
         roleBindingRepository,
         scopeService
     );
+
+    @BeforeEach
+    void initializeSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
     @AfterEach
     void clearSecurityContext() {
@@ -213,6 +219,26 @@ class ApiTokenAuthenticationFilterTest {
 
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRequestURI("/api/web/skills/global/publish");
+        request.addHeader("Authorization", "Bearer raw-token");
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        assertNotNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(apiTokenService).touchLastUsed(token);
+    }
+
+    @Test
+    void shouldAuthenticateBearerTokensBehindForwardedPrefix() throws Exception {
+        ApiToken token = new ApiToken("user-4", "cli", "sk_test", "hash", "[\"skill:read\"]");
+        UserAccount user = new UserAccount("user-4", "Dana", "dana@example.com", "");
+
+        when(apiTokenService.validateToken("raw-token")).thenReturn(Optional.of(token));
+        when(userAccountRepository.findById("user-4")).thenReturn(Optional.of(user));
+        when(roleBindingRepository.findByUserId("user-4")).thenReturn(List.of());
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/skillhub/api/cli/v1/auth/whoami");
+        request.setContextPath("/skillhub");
+        request.setServletPath("/api/cli/v1/auth/whoami");
         request.addHeader("Authorization", "Bearer raw-token");
 
         filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());

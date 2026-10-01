@@ -5,7 +5,10 @@ import { installSkill } from '../services/install-service'
 import { resolveInstallTargets } from '../agents/resolver'
 import { CliError } from '../shared/errors'
 import { EXIT } from '../shared/constants'
-import { parseSkillName } from '../shared/skill-name-parser'
+import { resolveSkillName } from '../shared/skill-name-parser'
+import { computeStrictIsTTY } from '../shared/tty'
+
+export { computeStrictIsTTY } from '../shared/tty'
 
 export interface InstallCommandOptions {
   namespace?: string | undefined
@@ -24,14 +27,6 @@ export interface InstallCommandDeps {
   resolveInstallTargets?: typeof resolveInstallTargets
   installSkill?: typeof installSkill
   isTTY?: () => boolean
-}
-
-export function computeStrictIsTTY(env: {
-  stdinIsTTY: boolean
-  stdoutIsTTY: boolean
-  json: boolean
-}): boolean {
-  return env.stdinIsTTY && env.stdoutIsTTY && !env.json
 }
 
 export async function resolveEffectiveScope(
@@ -94,9 +89,7 @@ export async function installCommand(
   const registry = resolveRegistry(options, process.env, await configStore.read())
   const token = resolveToken(options, process.env, await credentialsStore.getToken(registry))
 
-  const parsed = parseSkillName(skillNameArg)
-  const namespace = options.namespace ?? parsed.namespace
-  const slug = parsed.slug
+  const { namespace, slug } = resolveSkillName(skillNameArg, options.namespace)
 
   const resolveTargets = deps.resolveInstallTargets ?? resolveInstallTargets
   const targets = await resolveTargets({
@@ -117,7 +110,16 @@ export async function installCommand(
   })
 
   if (options.json) {
-    return JSON.stringify({ ok: true, namespace, slug, installed: result.installed })
+    return JSON.stringify({
+      ok: true,
+      namespace,
+      slug,
+      installed: result.installed,
+      ...(result.warnings?.length ? { warnings: result.warnings } : {})
+    })
   }
-  return result.installed.map(i => `Installed ${namespace}/${slug} -> ${i.dir} (${i.agent})`).join('\n')
+  return [
+    ...result.installed.map(i => `Installed ${namespace}/${slug} -> ${i.dir} (${i.agent})`),
+    ...(result.warnings ?? []).map(warning => `Warning: ${warning}`)
+  ].join('\n')
 }

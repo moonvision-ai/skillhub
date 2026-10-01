@@ -3,6 +3,7 @@ import { relative, isAbsolute } from 'node:path'
 import { InventoryStore } from '../stores/inventory-store'
 import { CliError } from '../shared/errors'
 import { EXIT } from '../shared/constants'
+import { acquireSkillTargetLock } from './skill-target-lock'
 
 /**
  * Validate that child path is strictly under parent directory.
@@ -15,6 +16,7 @@ function isPathUnder(child: string, parent: string): boolean {
 
 export interface RemoveLocalOptions {
   registry: string
+  namespace?: string | undefined
   slug: string
   agents?: string[] | undefined
   all?: boolean | undefined
@@ -29,7 +31,11 @@ export async function removeLocalSkill(options: RemoveLocalOptions): Promise<Rem
   const store = new InventoryStore(options.home)
   const inventory = await store.read()
 
-  const items = inventory.items.filter(i => i.registry === options.registry && i.slug === options.slug)
+  const items = inventory.items.filter(item =>
+    item.registry === options.registry &&
+    item.slug === options.slug &&
+    (options.namespace === undefined || item.namespace === options.namespace)
+  )
   if (items.length === 0) {
     throw new CliError(`skill not found locally: ${options.slug}`, EXIT.generic, {
       next: 'run `skillhub list` to see installed skills'
@@ -47,8 +53,9 @@ export async function removeLocalSkill(options: RemoveLocalOptions): Promise<Rem
   }
 
   const removed: RemoveResult['removed'] = []
+  const releases: Array<() => Promise<void>> = []
 
-  for (const { item, target } of targetsToRemove) {
+  for (const { target } of targetsToRemove) {
     // Validate installDir is strictly under the recorded rootDir
     if (!target.rootDir || !isPathUnder(target.installDir, target.rootDir)) {
       throw new CliError(`unsafe remove path: ${target.installDir} is not under ${target.rootDir ?? 'unknown root'}`, EXIT.filesystem, {
@@ -56,20 +63,31 @@ export async function removeLocalSkill(options: RemoveLocalOptions): Promise<Rem
         next: 'verify inventory integrity with `skillhub doctor`'
       })
     }
+  }
 
-    let existed = true
-    try {
-      await stat(target.installDir)
-    } catch {
-      existed = false
+  try {
+    for (const { target } of [...targetsToRemove]
+      .sort((left, right) => left.target.installDir.localeCompare(right.target.installDir))) {
+      releases.push(await acquireSkillTargetLock(target.rootDir, options.slug))
     }
 
-    if (existed) {
-      await rm(target.installDir, { recursive: true })
-    }
+    for (const { item, target } of targetsToRemove) {
+      let existed = true
+      try {
+        await stat(target.installDir)
+      } catch {
+        existed = false
+      }
 
-    await store.removeTarget(options.registry, item.namespace, options.slug, target.installDir)
-    removed.push({ namespace: item.namespace, agent: target.agent, dir: target.installDir, existed })
+      if (existed) {
+        await rm(target.installDir, { recursive: true })
+      }
+
+      await store.removeTarget(options.registry, item.namespace, options.slug, target.installDir)
+      removed.push({ namespace: item.namespace, agent: target.agent, dir: target.installDir, existed })
+    }
+  } finally {
+    for (const release of releases.reverse()) await release()
   }
 
   return { removed }

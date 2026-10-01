@@ -6,11 +6,9 @@ import static org.mockito.Mockito.mock;
 import com.iflytek.skillhub.auth.bootstrap.PassiveSessionAuthenticator;
 import com.iflytek.skillhub.auth.direct.DirectAuthProvider;
 import com.iflytek.skillhub.auth.direct.DirectAuthRequest;
-import com.iflytek.skillhub.auth.oauth.OAuthProviderPolicy;
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
 import com.iflytek.skillhub.config.AuthSessionBootstrapProperties;
 import com.iflytek.skillhub.config.DirectAuthProperties;
-import com.iflytek.skillhub.config.LocalAuthUiProperties;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -19,41 +17,28 @@ import org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2Clien
 class AuthMethodCatalogTest {
 
     @Test
-    void listMethodsShouldHideLocalLoginAndDisallowedOAuthProviders() {
-        OAuth2ClientProperties oauthProperties = oauthProperties();
-        LocalAuthUiProperties localAuthUiProperties = new LocalAuthUiProperties();
-        localAuthUiProperties.setEnabled(false);
-        OAuthProviderPolicy oauthProviderPolicy = new OAuthProviderPolicy();
-        oauthProviderPolicy.setAllowedProviders(List.of(" OIDC "));
+    void catalogsShouldHideEmptyAndPlaceholderOAuthProviders() {
+        OAuth2ClientProperties oauthProperties = new OAuth2ClientProperties();
+        oauthProperties.getRegistration().put("valid", registration("production-client", "Valid"));
+        oauthProperties.getRegistration().put("missing", registration(null, "Missing"));
+        oauthProperties.getRegistration().put("blank", registration("  ", "Blank"));
+        oauthProperties.getRegistration().put("placeholder", registration("PLACEHOLDER", "Placeholder"));
+        oauthProperties.getRegistration().put("local", registration("local-placeholder", "Local"));
 
         AuthMethodCatalog catalog = new AuthMethodCatalog(
             oauthProperties,
             new DirectAuthProperties(),
             new AuthSessionBootstrapProperties(),
-            localAuthUiProperties,
-            oauthProviderPolicy,
             List.of(),
             List.of()
         );
 
-        assertThat(catalog.listMethods(null))
-            .extracting(method -> method.id())
-            .contains("oauth-oidc")
-            .doesNotContain("local-password", "oauth-github");
         assertThat(catalog.listOAuthProviders(null))
             .extracting(provider -> provider.id())
-            .containsExactly("oidc");
-    }
-
-    private OAuth2ClientProperties oauthProperties() {
-        OAuth2ClientProperties properties = new OAuth2ClientProperties();
-        OAuth2ClientProperties.Registration github = new OAuth2ClientProperties.Registration();
-        github.setClientName("GitHub");
-        OAuth2ClientProperties.Registration oidc = new OAuth2ClientProperties.Registration();
-        oidc.setClientName("Authelia");
-        properties.getRegistration().put("github", github);
-        properties.getRegistration().put("oidc", oidc);
-        return properties;
+            .containsExactly("valid");
+        assertThat(catalog.listMethods(null))
+            .extracting(method -> method.id())
+            .containsExactly("local-password", "oauth-valid");
     }
 
     @Test
@@ -102,8 +87,6 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
-            enabledLocalAuthUiProperties(),
-            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );
@@ -153,8 +136,6 @@ class AuthMethodCatalogTest {
             oauthProperties,
             directAuthProperties,
             bootstrapProperties,
-            enabledLocalAuthUiProperties(),
-            new OAuthProviderPolicy(),
             List.of(directProvider),
             List.of(bootstrapProvider)
         );
@@ -167,7 +148,10 @@ class AuthMethodCatalogTest {
             );
     }
 
-    private LocalAuthUiProperties enabledLocalAuthUiProperties() {
-        return new LocalAuthUiProperties();
+    private static OAuth2ClientProperties.Registration registration(String clientId, String clientName) {
+        OAuth2ClientProperties.Registration registration = new OAuth2ClientProperties.Registration();
+        registration.setClientId(clientId);
+        registration.setClientName(clientName);
+        return registration;
     }
 }

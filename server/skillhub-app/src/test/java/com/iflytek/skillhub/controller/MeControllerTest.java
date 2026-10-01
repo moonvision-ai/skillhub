@@ -71,11 +71,14 @@ class MeControllerTest {
                                 0,
                                 "team-ai",
                                 Instant.parse("2026-03-17T12:00:00Z"),
+                                null,
+                                null,
                                 false,
                                 new SkillLifecycleVersionResponse(11L, "1.0.0", "PUBLISHED"),
                                 new SkillLifecycleVersionResponse(11L, "1.0.0", "PUBLISHED"),
                                 null,
-                                "PUBLISHED"
+                                "PUBLISHED",
+                                null
                         )),
                         9,
                         1,

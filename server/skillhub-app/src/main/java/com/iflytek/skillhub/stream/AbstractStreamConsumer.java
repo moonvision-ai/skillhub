@@ -1,5 +1,6 @@
 package com.iflytek.skillhub.stream;
 
+import com.iflytek.skillhub.observability.MessageObservationSupport;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.redisson.api.AutoClaimResult;
@@ -27,8 +28,8 @@ public abstract class AbstractStreamConsumer<T> {
     protected final Logger log = LoggerFactory.getLogger(getClass());
 
     private static final String FIELD_RETRY_COUNT = "retryCount";
-    private static final int MAX_RETRY_COUNT = 3;
-    private static final int READ_BATCH_SIZE = 10;
+    private static final int DEFAULT_MAX_RETRY_COUNT = 3;
+    private static final int DEFAULT_READ_BATCH_SIZE = 10;
     private static final Duration POLL_TIMEOUT = Duration.ofSeconds(2);
 
     private final RedissonClient redissonClient;
@@ -39,6 +40,7 @@ public abstract class AbstractStreamConsumer<T> {
     private final Duration reclaimMinIdle;
     private final int reclaimBatchSize;
     private final Duration reclaimInterval;
+    private final MessageObservationSupport messageObservationSupport;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private RStream<String, String> stream;
@@ -47,8 +49,18 @@ public abstract class AbstractStreamConsumer<T> {
 
     protected AbstractStreamConsumer(RedissonClient redissonClient,
                                      String streamKey,
-                                     String groupName) {
-        this(redissonClient, streamKey, groupName, true, Duration.ofMinutes(2), 20, Duration.ofSeconds(30));
+                                     String groupName,
+                                     MessageObservationSupport messageObservationSupport) {
+        this(
+                redissonClient,
+                streamKey,
+                groupName,
+                true,
+                Duration.ofMinutes(2),
+                20,
+                Duration.ofSeconds(30),
+                messageObservationSupport
+        );
     }
 
     protected AbstractStreamConsumer(RedissonClient redissonClient,
@@ -57,7 +69,8 @@ public abstract class AbstractStreamConsumer<T> {
                                      boolean reclaimEnabled,
                                      Duration reclaimMinIdle,
                                      int reclaimBatchSize,
-                                     Duration reclaimInterval) {
+                                     Duration reclaimInterval,
+                                     MessageObservationSupport messageObservationSupport) {
         this.redissonClient = redissonClient;
         this.streamKey = streamKey;
         this.groupName = groupName;
@@ -65,6 +78,7 @@ public abstract class AbstractStreamConsumer<T> {
         this.reclaimMinIdle = reclaimMinIdle;
         this.reclaimBatchSize = reclaimBatchSize;
         this.reclaimInterval = reclaimInterval;
+        this.messageObservationSupport = messageObservationSupport;
         this.consumerName = consumerPrefix() + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
@@ -156,7 +170,7 @@ public abstract class AbstractStreamConsumer<T> {
                 groupName,
                 consumerName,
                 StreamReadGroupArgs.neverDelivered()
-                        .count(READ_BATCH_SIZE)
+                        .count(readBatchSize())
                         .timeout(POLL_TIMEOUT)
         );
         processMessages(messages);
@@ -191,10 +205,24 @@ public abstract class AbstractStreamConsumer<T> {
         if (messages == null || messages.isEmpty()) {
             return;
         }
+        // Scope each entry independently because one XREADGROUP batch may contain unrelated traces.
         messages.forEach(this::handleMessage);
     }
 
     void handleMessage(StreamMessageId messageId, Map<String, String> data) {
+        messageObservationSupport.observeProcess(
+                RedisStreamMessageCarrier.MESSAGING_SYSTEM,
+                streamKey,
+                data,
+                RedisStreamMessageCarrier.ADAPTER,
+                () -> {
+                    handleMessageInScope(messageId, data);
+                    return null;
+                }
+        );
+    }
+
+    private void handleMessageInScope(StreamMessageId messageId, Map<String, String> data) {
         T payload = parsePayload(messageId.toString(), data);
         if (payload == null) {
             acknowledge(messageId);
@@ -208,19 +236,28 @@ public abstract class AbstractStreamConsumer<T> {
             markCompleted(payload);
             acknowledge(messageId);
         } catch (Exception e) {
-            handleFailure(payload, retryCount, e);
-            acknowledge(messageId);
+            messageObservationSupport.recordCurrentError(e);
+            if (shouldDeferFailure(payload, e)) {
+                markDeferred(payload, e);
+            } else {
+                handleFailure(payload, retryCount, e);
+                acknowledge(messageId);
+            }
         }
     }
 
     private void handleFailure(T payload, int retryCount, Exception e) {
-        if (retryCount < MAX_RETRY_COUNT) {
+        if (shouldRetry(payload, e, retryCount)) {
+            // Retry publication remains inside the current consumer scope, so the new producer
+            // span and message carrier continue the original trace.
             retryMessage(payload, retryCount + 1);
             return;
         }
-        markFailed(payload, truncateError(
-                taskDisplayName() + " failed (retried " + retryCount + " times): " + e.getMessage()
-        ));
+        markFailed(payload, truncateError(finalFailureReason(payload, e, retryCount)));
+    }
+
+    protected String finalFailureReason(T payload, Exception error, int retryCount) {
+        return taskDisplayName() + " failed (retried " + retryCount + " times): " + error.getMessage();
     }
 
     protected int parseRetryCount(Map<String, String> data) {
@@ -243,7 +280,32 @@ public abstract class AbstractStreamConsumer<T> {
     }
 
     protected void acknowledge(StreamMessageId messageId) {
-        stream().ack(groupName, messageId);
+        if (stream().ack(groupName, messageId) > 0) {
+            // This stream has one consumer group. Removing acknowledged entries prevents
+            // completed scan tasks from growing the Redis stream without bound.
+            stream().remove(messageId);
+        }
+    }
+
+    protected int readBatchSize() {
+        return DEFAULT_READ_BATCH_SIZE;
+    }
+
+    protected int maxRetryCount() {
+        return DEFAULT_MAX_RETRY_COUNT;
+    }
+
+    protected boolean shouldRetry(T payload, Exception error, int retryCount) {
+        return retryCount < maxRetryCount();
+    }
+
+    protected boolean shouldDeferFailure(T payload, Exception error) {
+        return false;
+    }
+
+    protected void markDeferred(T payload, Exception error) {
+        log.warn("Deferring {} task without acknowledging its stream entry: {}",
+                taskDisplayName(), payloadIdentifier(payload), error);
     }
 
     protected final RStream<String, String> stream() {

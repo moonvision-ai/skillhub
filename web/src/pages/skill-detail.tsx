@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { startTransition, useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useParams, useNavigate, useRouterState, useSearch } from '@tanstack/react-router'
+import { Link, useParams, useNavigate, useRouterState, useSearch } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ArrowUpCircle, ChevronDown, ChevronUp, Clock, Folder, Globe, Lock, RefreshCw, ShieldCheck, Terminal, User, Users } from 'lucide-react'
+import { ArrowLeft, ArrowUpCircle, Boxes, ChevronDown, ChevronUp, Clock, Folder, Globe, Lock, RefreshCw, ShieldCheck, Terminal, User, Users } from 'lucide-react'
 import { MarkdownRenderer } from '@/features/skill/markdown-renderer'
 import { resolvePackageRelativeLink } from '@/features/skill/package-relative-link'
 import { FileTree } from '@/features/skill/file-tree'
@@ -11,11 +11,14 @@ import type { FileTreeNode } from '@/features/skill/file-tree-builder'
 import type { SkillFile } from '@/api/types'
 import { InstallCommand } from '@/features/skill/install-command'
 import { ShareButton } from '@/features/skill/share-button'
+import { InstallForAgentButton } from '@/features/skill/install-for-agent-button'
 import { SkillLabelPanel } from '@/features/skill/skill-label-panel'
+import { ComplianceSnapshotPanel } from '@/features/skill/compliance-snapshot-panel'
 import {
   getOverviewCollapseMaxHeight,
   OVERVIEW_COLLAPSE_DESKTOP_MAX_HEIGHT,
   shouldCollapseOverview,
+  shouldReleaseOverviewLayoutQuiet,
 } from '@/features/skill/overview-collapse'
 import { resolveSkillActionErrorTitle } from '@/features/skill/skill-action-error'
 import { isPrecheckConfirmationMessage, extractPrecheckWarnings } from '@/features/publish/publish-error-utils'
@@ -24,16 +27,18 @@ import { isSkillDetailQueriesEnabled } from './skill-detail-query'
 import { RatingInput } from '@/features/social/rating-input'
 import { StarButton } from '@/features/social/star-button'
 import { SubscribeButton } from '@/features/social/subscribe-button'
+import { SkillReviews } from '@/features/social/skill-reviews'
 import { useAuth } from '@/features/auth/use-auth'
 import { adminApi, ApiError, buildApiUrl, WEB_API_PREFIX } from '@/api/client'
 import { useSubmitSkillReport } from '@/features/report/use-skill-reports'
 import { SecurityAuditSummary } from '@/features/security-audit/security-audit-summary'
 import { formatLocalDateTime } from '@/shared/lib/date-time'
 import { incrementSkillDownloadCount } from '@/shared/lib/skill-download-cache'
-import { getSkillSquareSearch, normalizeSkillDetailReturnTo } from '@/shared/lib/skill-navigation'
+import { getSkillLabelSearch, getSkillSquareSearch, normalizeSkillDetailReturnTo } from '@/shared/lib/skill-navigation'
 import { formatCompactCount } from '@/shared/lib/number-format'
 import { resolveDocumentationFilePath } from '@/shared/lib/skill-documentation'
 import { getHeadlineVersion, getOwnerPreviewVersion, getPublishedVersion } from '@/shared/lib/skill-lifecycle'
+import { navigateAfterOverlays } from '@/shared/lib/navigate-after-overlays'
 import { NamespaceBadge } from '@/shared/components/namespace-badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/shared/ui/tabs'
 import { Button } from '@/shared/ui/button'
@@ -149,6 +154,8 @@ export function SkillDetailPage() {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true)
   const overviewContentRef = useRef<HTMLDivElement | null>(null)
   const overviewSectionRef = useRef<HTMLDivElement | null>(null)
+  const overviewLayoutQuietRef = useRef(false)
+  const overviewQuietGenerationRef = useRef(0)
   const { namespace, slug } = useParams({ from: '/space/$namespace/$slug' })
   const { user, hasRole } = useAuth()
   const detailQueriesEnabled = isSkillDetailQueriesEnabled(skillDeleted)
@@ -160,7 +167,10 @@ export function SkillDetailPage() {
   const headlineVersion = skill ? getHeadlineVersion(skill) : null
   const publishedVersion = skill ? getPublishedVersion(skill) : null
   const ownerPreviewVersion = skill ? getOwnerPreviewVersion(skill) : null
-  const selectedVersion = headlineVersion?.version ?? versions?.[0]?.version
+  const requestedVersion = search.version
+  const selectedVersion = versions?.some(version => version.version === requestedVersion)
+    ? requestedVersion
+    : headlineVersion?.version ?? versions?.[0]?.version
   const selectedVersionEntry = versions?.find((version) => version.version === selectedVersion) ?? versions?.[0]
   const { data: files } = useSkillFiles(qns, qslug, selectedVersion, skillReady)
   const documentationPath = resolveDocumentationFilePath(files)
@@ -193,7 +203,15 @@ export function SkillDetailPage() {
   const canReport = skill?.canReport ?? true
   const canHardDeleteSkill = Boolean(skill && user && (skill.ownerId === user.userId || hasRole('SUPER_ADMIN')))
   const canManageLabels = Boolean(skill && user && (skill.canManageLifecycle || hasRole('SUPER_ADMIN')))
+  const canManageSecurityScan = Boolean(skill && user && (
+    skill.canManageLifecycle || hasRole('SKILL_ADMIN') || hasRole('SUPER_ADMIN')
+  ))
+  const securityAuditVersion = ownerPreviewVersion?.status === 'SCAN_FAILED'
+    ? ownerPreviewVersion
+    : selectedVersionEntry
   const isVersionDownloadable = selectedVersionEntry?.status === 'PUBLISHED' && (selectedVersionEntry?.downloadAvailable ?? false)
+  const suiteMemberships = skill?.memberOfSuites?.items ?? skill?.entryForSuites ?? []
+  const suiteMembershipTotal = skill?.memberOfSuites?.total ?? suiteMemberships.length
 
   useEffect(() => {
     // Recompute collapse rules whenever rendered documentation height changes so the page can keep
@@ -205,7 +223,7 @@ export function SkillDetailPage() {
     }
 
     const updateOverviewState = () => {
-      if (!overviewContentRef.current) {
+      if (!overviewContentRef.current || overviewLayoutQuietRef.current) {
         return
       }
 
@@ -216,11 +234,13 @@ export function SkillDetailPage() {
         window.innerHeight,
       )
 
-      setOverviewMaxHeight(nextMaxHeight)
-      setIsOverviewCollapsible(nextCollapsible)
+      // Bail out when ResizeObserver/layout noise repeats the same values to avoid
+      // re-render storms that race with body portals (Select, DropdownMenu, Dialog).
+      setOverviewMaxHeight((current) => (current === nextMaxHeight ? current : nextMaxHeight))
+      setIsOverviewCollapsible((current) => (current === nextCollapsible ? current : nextCollapsible))
 
       if (!nextCollapsible) {
-        setIsOverviewExpanded(false)
+        setIsOverviewExpanded((current) => (current ? false : current))
       }
     }
 
@@ -238,19 +258,32 @@ export function SkillDetailPage() {
     return () => {
       window.removeEventListener('resize', updateOverviewState)
       resizeObserver?.disconnect()
+      overviewQuietGenerationRef.current += 1
+      overviewLayoutQuietRef.current = false
     }
   }, [readme])
 
   const handleToggleOverview = () => {
-    if (!isOverviewExpanded) {
-      setIsOverviewExpanded(true)
-      return
-    }
-
-    setIsOverviewExpanded(false)
-    requestAnimationFrame(() => {
-      overviewSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // Quiet ResizeObserver for the expand/collapse commit (no max-height transition).
+    const quietGeneration = overviewQuietGenerationRef.current + 1
+    overviewQuietGenerationRef.current = quietGeneration
+    overviewLayoutQuietRef.current = true
+    const expanding = !isOverviewExpanded
+    startTransition(() => {
+      setIsOverviewExpanded(expanding)
     })
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (shouldReleaseOverviewLayoutQuiet(overviewQuietGenerationRef.current, quietGeneration)) {
+          overviewLayoutQuietRef.current = false
+        }
+      })
+    })
+    if (!expanding) {
+      requestAnimationFrame(() => {
+        overviewSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    }
   }
 
   const refreshSkill = () => {
@@ -300,7 +333,7 @@ export function SkillDetailPage() {
     setPreviewDialogOpen(true)
   }
 
-  const handlePackageMarkdownLinkClick = (
+  const handlePackageMarkdownLinkClick = useCallback((
     href: string,
     event: MouseEvent<HTMLAnchorElement>,
     currentFilePath: string | null | undefined,
@@ -320,15 +353,15 @@ export function SkillDetailPage() {
     }
 
     toast.error(t('skillDetail.packageLinkMissingTitle'), t('skillDetail.packageLinkMissingDescription'))
-  }
+  }, [files, t])
 
-  const handleOverviewLinkClick = (href: string, event: MouseEvent<HTMLAnchorElement>) => {
+  const handleOverviewLinkClick = useCallback((href: string, event: MouseEvent<HTMLAnchorElement>) => {
     handlePackageMarkdownLinkClick(href, event, documentationPath)
-  }
+  }, [documentationPath, handlePackageMarkdownLinkClick])
 
-  const handlePreviewLinkClick = (href: string, event: MouseEvent<HTMLAnchorElement>) => {
+  const handlePreviewLinkClick = useCallback((href: string, event: MouseEvent<HTMLAnchorElement>) => {
     handlePackageMarkdownLinkClick(href, event, previewNode?.path)
-  }
+  }, [handlePackageMarkdownLinkClick, previewNode?.path])
 
   // Download a single file from the skill version
   const handleDownloadFile = () => {
@@ -547,7 +580,9 @@ export function SkillDetailPage() {
         t('skillDetail.deleteSkillSuccessDescription', { skill: skill.displayName }),
       )
       setDeleteSkillInputOpen(false)
-      navigate({ to: resolveDeletedSkillReturnTo(search.returnTo) })
+      navigateAfterOverlays(() => {
+        navigate({ to: resolveDeletedSkillReturnTo(search.returnTo) })
+      })
       queryClient.removeQueries({ queryKey: ['skills', namespace, slug] })
       queryClient.invalidateQueries({ queryKey: ['skills', 'my'] })
     } catch (error) {
@@ -584,7 +619,9 @@ export function SkillDetailPage() {
         t('skillDetail.withdrawReviewSuccessDescription', { version: withdrawVersionTarget }),
       )
       setWithdrawVersionTarget(null)
-      navigate({ to: '/dashboard/skills' })
+      navigateAfterOverlays(() => {
+        navigate({ to: '/dashboard/skills' })
+      })
     } catch (error) {
       toast.error(t('skillDetail.withdrawReviewErrorTitle'), error instanceof Error ? error.message : '')
       throw error
@@ -803,17 +840,17 @@ export function SkillDetailPage() {
               </span>
             )}
             {isReviewFlowPending && (
-              <span className="badge-soft" style={{ background: '#fef3c7', color: '#92400e' }}>
+              <span className="badge-soft bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
                 {t('skillDetail.versionStatusPendingReview')}
               </span>
             )}
             {!isPendingPreview && (isRejectedPreview || hasRejectedOwnerPreview) && skill.canManageLifecycle && (
-              <span className="badge-soft" style={{ background: '#fee2e2', color: '#991b1b' }}>
+              <span className="badge-soft bg-red-100 text-red-900 dark:bg-red-950/60 dark:text-red-300">
                 {t('skillDetail.rejectedBadge')}
               </span>
             )}
           </div>
-          <h1 className="text-balance text-4xl font-bold font-heading text-foreground">{skill.displayName}</h1>
+          <h1 className="text-balance break-words text-4xl font-bold font-heading text-foreground [overflow-wrap:anywhere]">{skill.displayName}</h1>
           {skill.ownerDisplayName && (
             <div className="flex min-w-0">
               <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-background/85 px-3 py-1.5 text-sm text-muted-foreground shadow-sm backdrop-blur-sm">
@@ -830,17 +867,19 @@ export function SkillDetailPage() {
           {(skill.labels?.length ?? 0) > 0 && (
             <div className="flex flex-wrap gap-2">
               {skill.labels!.map((label) => (
-                <span
+                <Link
                   key={label.slug}
+                  to="/search"
+                  search={getSkillLabelSearch(label.slug)}
                   className={cn(
-                    'inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium',
+                    'inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2',
                     label.type === 'PRIVILEGED'
-                      ? 'border-amber-500/40 bg-amber-100 text-amber-900'
-                      : 'border-slate-300 bg-slate-100 text-slate-800',
+                      ? 'border-amber-500/40 bg-amber-100 text-amber-900 hover:bg-amber-200/80 dark:bg-amber-950/60 dark:text-amber-300 dark:hover:bg-amber-900/70'
+                      : 'border-border bg-secondary text-secondary-foreground hover:bg-secondary/80',
                   )}
                 >
                   {label.displayName}
-                </span>
+                </Link>
               ))}
             </div>
           )}
@@ -884,7 +923,7 @@ export function SkillDetailPage() {
                 <div ref={overviewSectionRef} className="space-y-4">
                   <div
                     className={cn(
-                      'relative overflow-hidden transition-[max-height] duration-300 ease-out',
+                      'relative overflow-hidden',
                       !isOverviewExpanded && isOverviewCollapsible && 'rounded-2xl',
                     )}
                     style={!isOverviewExpanded && isOverviewCollapsible ? { maxHeight: `${overviewMaxHeight}px` } : undefined}
@@ -1036,6 +1075,7 @@ export function SkillDetailPage() {
                       {version.changelog && (
                         <p className="text-sm text-muted-foreground leading-relaxed">{version.changelog}</p>
                       )}
+                      <ComplianceSnapshotPanel snapshot={version.complianceSnapshot} className="mt-3" />
                       <div className="text-xs text-muted-foreground mt-2 flex items-center gap-3">
                         <span>{t('skillDetail.fileCount', { count: version.fileCount })}</span>
                         <span className="w-1 h-1 rounded-full bg-muted-foreground/40" />
@@ -1050,6 +1090,8 @@ export function SkillDetailPage() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        <SkillReviews skillId={skill.id} canInteract={canInteract} onRequireLogin={requireLogin} />
       </div>
 
       {/* Sidebar */}
@@ -1148,6 +1190,99 @@ export function SkillDetailPage() {
           </div>
         </Card>
 
+        <Card className="p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Boxes className="h-4 w-4 text-primary" aria-hidden="true" />
+            <span className="text-sm font-semibold font-heading text-foreground">
+              {t('skillDetail.suiteMembershipTitle')}
+            </span>
+          </div>
+          <p className="text-sm leading-6 text-muted-foreground">
+            {t('skillDetail.suiteMembershipDescription')}
+          </p>
+
+          {suiteMemberships.length === 0 ? (
+            <p className="rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">
+              {t('skillDetail.suiteMembershipEmpty')}
+            </p>
+          ) : (
+            <div className="divide-y divide-border/60 border-y border-border/60">
+              {suiteMemberships.map((suite) => (
+                <div key={suite.suiteId} className="min-w-0 py-4 first:pt-3 last:pb-3">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <Link
+                      to="/suite/$namespace/$slug"
+                      params={{ namespace: suite.namespace, slug: suite.slug }}
+                      search={{ version: suite.version }}
+                      className="min-w-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
+                    >
+                      <span className="block break-words text-sm font-semibold text-foreground [overflow-wrap:anywhere]">
+                        {suite.displayName}
+                      </span>
+                      <span className="mt-1 block break-all font-mono text-xs text-muted-foreground">
+                        @{suite.namespace}/{suite.slug}@{suite.version}
+                      </span>
+                    </Link>
+                    <span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                      {t((suite.currentSkillEntry ?? !skill.memberOfSuites)
+                        ? 'skillDetail.suiteMembershipEntryRole'
+                        : 'skillDetail.suiteMembershipMemberRole')}
+                    </span>
+                  </div>
+
+                  {(suite.visibleSiblingMembers?.length ?? 0) > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {t('skillDetail.suiteMembershipSiblingTitle')}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(suite.visibleSiblingMembers ?? []).map((member) => member.available ? (
+                          <Link
+                            key={member.skillId}
+                            to="/space/$namespace/$slug"
+                            params={{ namespace: member.namespace, slug: member.slug }}
+                            search={{ returnTo: undefined }}
+                            className="max-w-full rounded-full bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2"
+                          >
+                            <span className="block max-w-[13rem] truncate">{member.displayName}</span>
+                          </Link>
+                        ) : (
+                          <span
+                            key={member.skillId}
+                            className="max-w-full rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                            title={t('skillDetail.suiteMembershipUnavailable')}
+                          >
+                            <span className="block max-w-[13rem] truncate">{member.displayName}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span>{t('skillDetail.suiteEntryMemberCount', { count: suite.memberCount })}</span>
+                    {(suite.restrictedMemberCount ?? 0) > 0 && (
+                      <span>{t('skillDetail.suiteMembershipRestricted', { count: suite.restrictedMemberCount ?? 0 })}</span>
+                    )}
+                    {(suite.omittedVisibleMemberCount ?? 0) > 0 && (
+                      <span>{t('skillDetail.suiteMembershipOmitted', { count: suite.omittedVisibleMemberCount ?? 0 })}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {suiteMembershipTotal > suiteMemberships.length && (
+            <p className="text-xs leading-5 text-muted-foreground">
+              {t('skillDetail.suiteMembershipMore', {
+                shown: suiteMemberships.length,
+                total: suiteMembershipTotal,
+              })}
+            </p>
+          )}
+        </Card>
+
         {publishedVersion && canInteract && (
           <Card className="p-5 space-y-4">
             <div className="flex items-center gap-2">
@@ -1226,8 +1361,20 @@ export function SkillDetailPage() {
           description={skill.summary}
         />
 
-        {skill.canManageLifecycle && selectedVersionEntry && (
-          <SecurityAuditSummary skillId={skill.id} versionId={selectedVersionEntry.id} versionStatus={selectedVersionEntry.status} />
+        <InstallForAgentButton
+          namespace={namespace}
+          slug={slug}
+          version={selectedVersionEntry?.version ?? publishedVersion?.version ?? ''}
+          disabled={!selectedVersionEntry || skill.status === 'ARCHIVED' || !isVersionDownloadable}
+        />
+
+        {canManageSecurityScan && securityAuditVersion && (
+          <SecurityAuditSummary
+            skillId={skill.id}
+            versionId={securityAuditVersion.id}
+            versionStatus={securityAuditVersion.status}
+            canRetry
+          />
         )}
 
         <SkillLabelPanel

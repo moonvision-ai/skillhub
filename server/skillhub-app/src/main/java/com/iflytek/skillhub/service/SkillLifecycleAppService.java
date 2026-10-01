@@ -1,5 +1,6 @@
 package com.iflytek.skillhub.service;
 
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.namespace.Namespace;
 import com.iflytek.skillhub.domain.namespace.NamespaceRepository;
@@ -98,7 +99,7 @@ public class SkillLifecycleAppService {
                                                         Map<Long, NamespaceRole> userNamespaceRoles,
                                                         AuditRequestContext auditContext) {
         Skill skill = findSkill(namespace, slug, userId);
-        SkillVersion skillVersion = findVersion(skill.getId(), version);
+        SkillVersion skillVersion = findVersionForUpdate(skill.getId(), version);
         skillGovernanceService.deleteVersion(
                 skill,
                 skillVersion,
@@ -109,6 +110,28 @@ public class SkillLifecycleAppService {
                 namespace
         );
         return new SkillLifecycleMutationResponse(skill.getId(), skillVersion.getId(), "DELETE_VERSION", version);
+    }
+
+    @Transactional
+    public SkillLifecycleMutationResponse yankVersion(String namespace,
+                                                      String slug,
+                                                      String version,
+                                                      AdminSkillActionRequest request,
+                                                      String userId,
+                                                      Map<Long, NamespaceRole> userNamespaceRoles,
+                                                      AuditRequestContext auditContext) {
+        Skill skill = findSkill(namespace, slug, userId);
+        SkillVersion skillVersion = findVersionForUpdate(skill.getId(), version);
+        SkillVersion yanked = skillGovernanceService.yankVersion(
+                skill,
+                skillVersion,
+                userId,
+                normalizeRoles(userNamespaceRoles),
+                auditContext.clientIp(),
+                auditContext.userAgent(),
+                request != null ? request.reason() : null
+        );
+        return new SkillLifecycleMutationResponse(skill.getId(), skillVersion.getId(), "YANK", yanked.getStatus().name());
     }
 
     @Transactional
@@ -128,7 +151,7 @@ public class SkillLifecycleAppService {
                 null,
                 auditContext.clientIp(),
                 auditContext.userAgent(),
-                "{\"version\":\"" + version.replace("\"", "\\\"") + "\"}"
+                AuditDetail.of("version", version)
         );
         return new SkillLifecycleMutationResponse(
                 skill.getId(),
@@ -165,8 +188,7 @@ public class SkillLifecycleAppService {
                 null,
                 auditContext.clientIp(),
                 auditContext.userAgent(),
-                "{\"sourceVersion\":\"" + version.replace("\"", "\\\"")
-                        + "\",\"targetVersion\":\"" + targetVersion.replace("\"", "\\\"") + "\"}"
+                AuditDetail.of("sourceVersion", version, "targetVersion", targetVersion)
         );
         return new SkillLifecycleMutationResponse(
                 result.skillId(),
@@ -201,7 +223,7 @@ public class SkillLifecycleAppService {
                 null,
                 auditContext.clientIp(),
                 auditContext.userAgent(),
-                "{\"version\":\"" + version.replace("\"", "\\\"") + "\",\"targetVisibility\":\"" + targetVisibility + "\"}"
+                AuditDetail.of("version", version, "targetVisibility", targetVisibility)
         );
         return new SkillLifecycleMutationResponse(
                 skill.getId(),
@@ -234,7 +256,7 @@ public class SkillLifecycleAppService {
                 null,
                 auditContext.clientIp(),
                 auditContext.userAgent(),
-                "{\"version\":\"" + version.replace("\"", "\\\"") + "\"}"
+                AuditDetail.of("version", version)
         );
         return new SkillLifecycleMutationResponse(
                 skill.getId(),
@@ -258,6 +280,13 @@ public class SkillLifecycleAppService {
 
     private SkillVersion findVersion(Long skillId, String version) {
         return skillVersionRepository.findBySkillIdAndVersion(skillId, version)
+                .orElseThrow(() -> new DomainBadRequestException("error.skill.version.notFound", version));
+    }
+
+    private SkillVersion findVersionForUpdate(Long skillId, String version) {
+        return skillVersionRepository.findBySkillIdForUpdate(skillId).stream()
+                .filter(candidate -> candidate.getVersion().equals(version))
+                .findFirst()
                 .orElseThrow(() -> new DomainBadRequestException("error.skill.version.notFound", version));
     }
 

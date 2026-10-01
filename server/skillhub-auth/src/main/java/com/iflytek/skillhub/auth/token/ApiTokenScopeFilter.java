@@ -1,11 +1,11 @@
 package com.iflytek.skillhub.auth.token;
 
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
+import com.iflytek.skillhub.auth.policy.RouteSecurityPolicyRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -48,9 +48,10 @@ public class ApiTokenScopeFilter extends OncePerRequestFilter {
             .map(authority -> authority.substring("SCOPE_".length()))
             .collect(Collectors.toSet());
 
+        String requestPath = RouteSecurityPolicyRegistry.requestPath(request);
         ApiTokenScopeService.AuthorizationDecision decision = apiTokenScopeService.authorize(
             request.getMethod(),
-            request.getRequestURI(),
+            requestPath,
             tokenScopes
         );
 
@@ -59,16 +60,15 @@ public class ApiTokenScopeFilter extends OncePerRequestFilter {
             return;
         }
 
-        accessDeniedHandler.handle(
-            request,
-            response,
-            new AccessDeniedException(decision.message())
-        );
+        ApiTokenAccessDeniedException exception = decision.requiredScope() != null
+                ? ApiTokenAccessDeniedException.missingScope(decision.requiredScope())
+                : ApiTokenAccessDeniedException.unsupportedEndpoint(requestPath);
+        accessDeniedHandler.handle(request, response, exception);
     }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI();
+        String path = RouteSecurityPolicyRegistry.requestPath(request);
         return path == null || (!path.startsWith("/api/v1/")
                 && !path.startsWith("/api/web/")
                 && !path.startsWith("/api/cli/"));

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { UploadZone } from '@/features/publish/upload-zone'
+import { packageFolderAsZip } from '@/features/publish/folder-zip'
 import {
   extractPrecheckWarnings,
   isFrontmatterFailureMessage,
@@ -25,6 +26,7 @@ import { usePublishSkill } from '@/shared/hooks/use-skill-queries'
 import { useMyNamespaces } from '@/shared/hooks/use-namespace-queries'
 import { ConfirmDialog } from '@/shared/components/confirm-dialog'
 import { DashboardPageHeader } from '@/shared/components/dashboard-page-header'
+import { navigateAfterOverlays } from '@/shared/lib/navigate-after-overlays'
 import { toast } from '@/shared/lib/toast'
 import { ApiError } from '@/api/client'
 
@@ -40,6 +42,7 @@ export function PublishPage() {
   const [visibility, setVisibility] = useState<string>(prefill.visibility)
   const [warningDialogOpen, setWarningDialogOpen] = useState(false)
   const [precheckWarnings, setPrecheckWarnings] = useState<string[]>([])
+  const [isPackaging, setIsPackaging] = useState(false)
 
   const { data: namespaces, isLoading: isLoadingNamespaces } = useMyNamespaces()
   const publishMutation = usePublishSkill()
@@ -63,6 +66,18 @@ export function PublishPage() {
     setSelectedFile(file)
     setPrecheckWarnings([])
     setWarningDialogOpen(false)
+  }
+
+  const handleFolderSelect = async (files: File[]) => {
+    setIsPackaging(true)
+    try {
+      const zip = await packageFolderAsZip(files)
+      handleFileSelect(zip)
+    } catch {
+      toast.error(t('publish.folderPackagingFailed'))
+    } finally {
+      setIsPackaging(false)
+    }
   }
 
   const publishSkill = async (confirmWarnings = false) => {
@@ -92,7 +107,9 @@ export function PublishPage() {
           t('publish.pendingReviewDescription', { skill: skillLabel })
         )
       }
-      navigate({ to: '/dashboard/skills' })
+      navigateAfterOverlays(() => {
+        navigate({ to: '/dashboard/skills' })
+      })
     } catch (error) {
       if (error instanceof ApiError && error.status === 408) {
         toast.error(t('publish.timeoutTitle'), t('publish.timeoutDescription'))
@@ -138,22 +155,32 @@ export function PublishPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8 animate-fade-up">
+    <div className="mx-auto max-w-2xl space-y-8 animate-fade-up">
       <DashboardPageHeader title={t('publish.title')} subtitle={t('publish.subtitle')} />
 
-      <Card className="p-4 bg-blue-500/5 border-blue-500/20">
-        <div className="flex items-start gap-3">
-          <svg className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <Card className="space-y-8 p-6 md:p-8">
+        {prefill.resubmitSkill && prefill.resubmitVersion ? (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
+            <h2 className="text-sm font-semibold text-foreground">
+              {t('publish.resubmitNotice.title', {
+                skill: `@${prefill.namespace}/${prefill.resubmitSkill}`,
+                version: prefill.resubmitVersion,
+              })}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t('publish.resubmitNotice.description')}
+            </p>
+          </div>
+        ) : null}
+        <div className="flex items-start gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+          <svg className="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <div className="flex-1">
-            <h3 className="text-sm font-semibold text-foreground mb-1">{t('publish.reviewNotice.title')}</h3>
+            <h3 className="mb-1 text-sm font-semibold text-foreground">{t('publish.reviewNotice.title')}</h3>
             <p className="text-sm text-muted-foreground">{t('publish.reviewNotice.description')}</p>
           </div>
         </div>
-      </Card>
-
-      <Card className="p-8 space-y-8">
         <div className="space-y-3">
           <Label htmlFor="namespace" className="text-sm font-semibold font-heading">{t('publish.namespace')}</Label>
           {isLoadingNamespaces ? (
@@ -197,9 +224,9 @@ export function PublishPage() {
         <div className="space-y-3">
           <Label className="text-sm font-semibold font-heading">{t('publish.file')}</Label>
           <UploadZone
-            key={selectedFile ? `${selectedFile.name}-${selectedFile.lastModified}` : 'empty'}
             onFileSelect={handleFileSelect}
-            disabled={publishMutation.isPending}
+            onFolderSelect={handleFolderSelect}
+            disabled={publishMutation.isPending || isPackaging}
           />
           {selectedFile && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-secondary/30 px-4 py-3">

@@ -31,6 +31,14 @@ class WellKnownControllerTest {
     void clawhubConfig_returns_apiBase() throws Exception {
         mockMvc.perform(get("/.well-known/clawhub.json"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.apiBase").value("/api/v1"));
+                .andExpect(jsonPath("$.apiBase").value("/api/v1"))
+                .andExpect(jsonPath("$.capabilities[0]").value("skill-suite-v1"));
+    }
+
+    @Test
+    void clawhubConfig_includes_forwarded_prefix() throws Exception {
+        mockMvc.perform(get("/.well-known/clawhub.json").header("X-Forwarded-Prefix", "/skillhub"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.apiBase").value("/skillhub/api/v1"));
     }
 }

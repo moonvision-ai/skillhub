@@ -3,10 +3,8 @@ package com.iflytek.skillhub.service;
 import com.iflytek.skillhub.auth.bootstrap.PassiveSessionAuthenticator;
 import com.iflytek.skillhub.auth.direct.DirectAuthProvider;
 import com.iflytek.skillhub.auth.oauth.OAuthLoginRedirectSupport;
-import com.iflytek.skillhub.auth.oauth.OAuthProviderPolicy;
 import com.iflytek.skillhub.config.AuthSessionBootstrapProperties;
 import com.iflytek.skillhub.config.DirectAuthProperties;
-import com.iflytek.skillhub.config.LocalAuthUiProperties;
 import com.iflytek.skillhub.dto.AuthMethodResponse;
 import com.iflytek.skillhub.dto.AuthProviderResponse;
 import java.net.URLEncoder;
@@ -14,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import org.springframework.boot.autoconfigure.security.oauth2.client.OAuth2ClientProperties;
 import org.springframework.stereotype.Service;
 
@@ -27,23 +26,17 @@ public class AuthMethodCatalog {
     private final OAuth2ClientProperties oAuth2ClientProperties;
     private final DirectAuthProperties directAuthProperties;
     private final AuthSessionBootstrapProperties sessionBootstrapProperties;
-    private final LocalAuthUiProperties localAuthUiProperties;
-    private final OAuthProviderPolicy oauthProviderPolicy;
     private final List<DirectAuthProvider> directAuthProviders;
     private final List<PassiveSessionAuthenticator> passiveSessionAuthenticators;
 
     public AuthMethodCatalog(OAuth2ClientProperties oAuth2ClientProperties,
                              DirectAuthProperties directAuthProperties,
                              AuthSessionBootstrapProperties sessionBootstrapProperties,
-                             LocalAuthUiProperties localAuthUiProperties,
-                             OAuthProviderPolicy oauthProviderPolicy,
                              List<DirectAuthProvider> directAuthProviders,
                              List<PassiveSessionAuthenticator> passiveSessionAuthenticators) {
         this.oAuth2ClientProperties = oAuth2ClientProperties;
         this.directAuthProperties = directAuthProperties;
         this.sessionBootstrapProperties = sessionBootstrapProperties;
-        this.localAuthUiProperties = localAuthUiProperties;
-        this.oauthProviderPolicy = oauthProviderPolicy;
         this.directAuthProviders = directAuthProviders;
         this.passiveSessionAuthenticators = passiveSessionAuthenticators;
     }
@@ -51,7 +44,7 @@ public class AuthMethodCatalog {
     public List<AuthProviderResponse> listOAuthProviders(String returnTo) {
         String sanitizedReturnTo = OAuthLoginRedirectSupport.sanitizeReturnTo(returnTo);
         return new ArrayList<>(oAuth2ClientProperties.getRegistration().entrySet().stream()
-            .filter(entry -> oauthProviderPolicy.isAllowed(entry.getKey()))
+            .filter(entry -> isValidOAuthProvider(entry.getValue()))
             .sorted(Comparator.comparing(entry -> entry.getKey()))
             .map(entry -> new AuthProviderResponse(
                 entry.getKey(),
@@ -63,22 +56,31 @@ public class AuthMethodCatalog {
             .toList());
     }
 
+    /**
+     * Checks whether an OAuth provider has a non-empty, non-placeholder client ID.
+     */
+    private boolean isValidOAuthProvider(OAuth2ClientProperties.Registration registration) {
+        String clientId = registration.getClientId();
+        if (clientId == null || clientId.isBlank()) {
+            return false;
+        }
+        return !clientId.toLowerCase(Locale.ROOT).contains("placeholder");
+    }
+
     public List<AuthMethodResponse> listMethods(String returnTo) {
         String sanitizedReturnTo = OAuthLoginRedirectSupport.sanitizeReturnTo(returnTo);
         List<AuthMethodResponse> methods = new ArrayList<>();
 
-        if (localAuthUiProperties.isEnabled()) {
-            methods.add(new AuthMethodResponse(
-                "local-password",
-                "PASSWORD",
-                "local",
-                "Local Account",
-                "/api/v1/auth/local/login"
-            ));
-        }
+        methods.add(new AuthMethodResponse(
+            "local-password",
+            "PASSWORD",
+            "local",
+            "Local Account",
+            "/api/v1/auth/local/login"
+        ));
 
         oAuth2ClientProperties.getRegistration().entrySet().stream()
-            .filter(entry -> oauthProviderPolicy.isAllowed(entry.getKey()))
+            .filter(entry -> isValidOAuthProvider(entry.getValue()))
             .sorted(Comparator.comparing(entry -> entry.getKey()))
             .forEach(entry -> methods.add(new AuthMethodResponse(
                 "oauth-" + entry.getKey(),

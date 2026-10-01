@@ -13,6 +13,8 @@ import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
 import com.iflytek.skillhub.domain.skill.SkillVersionStatus;
 import com.iflytek.skillhub.domain.skill.SkillVisibility;
 import com.iflytek.skillhub.domain.skill.service.SkillLifecycleProjectionService;
+import com.iflytek.skillhub.domain.user.UserAccount;
+import com.iflytek.skillhub.domain.user.UserAccountRepository;
 import com.iflytek.skillhub.search.SearchQuery;
 import com.iflytek.skillhub.search.SearchQueryService;
 import com.iflytek.skillhub.search.SearchResult;
@@ -59,6 +61,9 @@ class SkillSearchAppServiceTest {
     @Mock
     private RbacService rbacService;
 
+    @Mock
+    private UserAccountRepository userAccountRepository;
+
     private SkillSearchAppService service;
 
     @BeforeEach
@@ -69,7 +74,9 @@ class SkillSearchAppServiceTest {
                 namespaceRepository,
                 namespaceService,
                 new SkillLifecycleProjectionService(skillVersionRepository),
-                rbacService
+                new ComplianceSnapshotProjectionService(new com.fasterxml.jackson.databind.ObjectMapper()),
+                rbacService,
+                userAccountRepository
         );
     }
 
@@ -100,11 +107,14 @@ class SkillSearchAppServiceTest {
         when(skillRepository.findByIdIn(List.of(11L))).thenReturn(List.of(visibleSkill));
         when(namespaceRepository.findByIdIn(List.of(2L))).thenReturn(List.of(activeNamespace));
         when(skillVersionRepository.findByIdIn(List.of(111L))).thenReturn(List.of());
+        when(userAccountRepository.findByIdIn(List.of("owner-1")))
+                .thenReturn(List.of(new UserAccount("owner-1", "Alice", "alice@example.com", null)));
 
         SkillSearchAppService.SearchResponse response = service.search("skill", null, "newest", 0, 1, null, null);
 
         assertEquals(1, response.items().size());
         assertEquals("visible-skill", response.items().getFirst().slug());
+        assertEquals("Alice", response.items().getFirst().ownerDisplayName());
         assertEquals(1, response.total());
         verify(searchQueryService, times(1)).search(any());
     }
@@ -185,6 +195,49 @@ class SkillSearchAppServiceTest {
         verify(skillVersionRepository, times(1)).findByIdIn(List.of(101L, 102L));
         verify(skillVersionRepository, times(0))
                 .findBySkillIdInAndStatus(List.of(10L, 11L), com.iflytek.skillhub.domain.skill.SkillVersionStatus.PUBLISHED);
+    }
+
+    @Test
+    void search_shouldProjectComplianceSnapshotFromHeadlineVersion() {
+        Skill skill = new Skill(1L, "compliance-skill", "owner-1", SkillVisibility.PUBLIC);
+        setField(skill, "id", 10L);
+        skill.setLatestVersionId(101L);
+
+        SkillVersion version = publishedVersion(10L, 101L, "1.0.0");
+        version.setParsedMetadataJson("""
+                {
+                  "complianceSnapshot": {
+                    "schemaVersion": "1.0",
+                    "items": [
+                      {
+                        "standard": "mitre-attack",
+                        "version": "v19.1",
+                        "controlId": "T1059",
+                        "title": "Command and Scripting Interpreter",
+                        "evidence": []
+                      }
+                    ],
+                    "digest": "sha256:demo"
+                  }
+                }
+                """);
+
+        Namespace namespace = new Namespace("global", "Global", "owner-1");
+        setField(namespace, "id", 1L);
+        namespace.setStatus(NamespaceStatus.ACTIVE);
+
+        when(searchQueryService.search(any()))
+                .thenReturn(new SearchResult(List.of(10L), 1, 0, 20));
+        when(skillRepository.findByIdIn(List.of(10L))).thenReturn(List.of(skill));
+        when(namespaceRepository.findByIdIn(List.of(1L))).thenReturn(List.of(namespace));
+        when(skillVersionRepository.findByIdIn(List.of(101L))).thenReturn(List.of(version));
+
+        SkillSearchAppService.SearchResponse response = service.search("T1059", null, "relevance", 0, 20, null, null);
+
+        assertEquals(1, response.items().size());
+        assertEquals("mitre-attack", response.items().getFirst().complianceSnapshot().items().getFirst().standard());
+        assertEquals("T1059", response.items().getFirst().complianceSnapshot().items().getFirst().controlId());
+        assertEquals("sha256:demo", response.items().getFirst().complianceSnapshot().digest());
     }
 
     @Test

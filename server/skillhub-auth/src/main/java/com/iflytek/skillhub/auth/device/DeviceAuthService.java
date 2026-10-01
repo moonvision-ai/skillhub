@@ -1,6 +1,8 @@
 package com.iflytek.skillhub.auth.device;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iflytek.skillhub.auth.token.ApiTokenService;
+import com.iflytek.skillhub.auth.token.ApiTokenScopes;
 import com.iflytek.skillhub.domain.shared.exception.DomainBadRequestException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -29,18 +31,20 @@ public class DeviceAuthService {
     private static final long PENDING_CODE_TTL_MINUTES = EXPIRES_IN_SECONDS / 60L;
     private static final long USED_CODE_TTL_MINUTES = 1L;
     private static final String CLI_DEVICE_TOKEN_NAME = "CLI Device Flow";
-    private static final String CLI_DEVICE_SCOPE_JSON = "[\"skill:read\",\"skill:publish\"]";
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final ApiTokenService apiTokenService;
+    private final ObjectMapper objectMapper;
     private final String verificationUri;
     private final SecureRandom random = new SecureRandom();
 
     public DeviceAuthService(RedisTemplate<String, Object> redisTemplate,
                              ApiTokenService apiTokenService,
-                             @Value("${skillhub.device-auth.verification-uri:/cli/auth}") String verificationUri) {
+                             ObjectMapper objectMapper,
+                             @Value("${skillhub.device-auth.verification-uri:/device}") String verificationUri) {
         this.redisTemplate = redisTemplate;
         this.apiTokenService = apiTokenService;
+        this.objectMapper = objectMapper;
         this.verificationUri = verificationUri;
     }
 
@@ -71,7 +75,7 @@ public class DeviceAuthService {
             throw new DomainBadRequestException("error.deviceAuth.userCode.invalid");
         }
 
-        DeviceCodeData data = (DeviceCodeData) redisTemplate.opsForValue().get(DEVICE_CODE_PREFIX + deviceCode);
+        DeviceCodeData data = readDeviceCodeData(deviceCode);
         if (data == null) {
             throw new DomainBadRequestException("error.deviceAuth.deviceCode.expired");
         }
@@ -97,7 +101,7 @@ public class DeviceAuthService {
      * into an API token exactly once.
      */
     public DeviceTokenResponse pollToken(String deviceCode) {
-        DeviceCodeData data = (DeviceCodeData) redisTemplate.opsForValue().get(DEVICE_CODE_PREFIX + deviceCode);
+        DeviceCodeData data = readDeviceCodeData(deviceCode);
 
         if (data == null) {
             throw new DomainBadRequestException("error.deviceAuth.deviceCode.invalid");
@@ -129,7 +133,7 @@ public class DeviceAuthService {
             String token = apiTokenService.rotateToken(
                 data.getUserId(),
                 CLI_DEVICE_TOKEN_NAME,
-                CLI_DEVICE_SCOPE_JSON
+                ApiTokenScopes.DEFAULT_USER_SCOPE_JSON
             ).rawToken();
 
             data.setStatus(DeviceCodeStatus.USED);
@@ -145,6 +149,17 @@ public class DeviceAuthService {
             redisTemplate.delete(DEVICE_CLAIM_PREFIX + deviceCode);
             throw ex;
         }
+    }
+
+    /**
+     * Reads device-code state from Redis. The shared template's JSON value
+     * serializer carries no type information, so values deserialize as plain
+     * maps; convert explicitly instead of casting (a direct cast throws
+     * {@code ClassCastException} on every read).
+     */
+    private DeviceCodeData readDeviceCodeData(String deviceCode) {
+        Object raw = redisTemplate.opsForValue().get(DEVICE_CODE_PREFIX + deviceCode);
+        return raw == null ? null : objectMapper.convertValue(raw, DeviceCodeData.class);
     }
 
     private String generateRandomDeviceCode() {

@@ -7,6 +7,8 @@ import { FileTree } from '@/features/skill/file-tree'
 import { FilePreviewDialog } from '@/features/skill/file-preview-dialog'
 import type { FileTreeNode } from '@/features/skill/file-tree-builder'
 import { MarkdownRenderer } from '@/features/skill/markdown-renderer'
+import { ComplianceSnapshotPanel } from '@/features/skill/compliance-snapshot-panel'
+import { ReviewComplianceDiffPanel, pickBaseVersion } from './review-compliance-diff-panel'
 import { Button, buttonVariants } from '@/shared/ui/button'
 import { Card } from '@/shared/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
@@ -76,6 +78,8 @@ export function ReviewSkillDetailSection({ detail, isLoading, hasError, reviewId
   }
 
   const documentation = getReviewSkillDocumentation(detail)
+  const pendingVersion = detail.versions.find((version) => version.version === detail.activeVersion) ?? null
+  const baseVersion = pickBaseVersion(detail.versions, detail.activeVersion)
 
   return (
     <Card className="p-6 space-y-4">
@@ -113,6 +117,12 @@ export function ReviewSkillDetailSection({ detail, isLoading, hasError, reviewId
               {t('review.downloadSkillZip')}
             </a>
           </div>
+
+          <ReviewComplianceDiffPanel
+            baseVersion={baseVersion}
+            pendingVersion={pendingVersion}
+            className="shadow-sm"
+          />
 
           <Tabs defaultValue="overview" className="space-y-4">
             <TabsList>
@@ -161,7 +171,7 @@ export function ReviewSkillDetailSection({ detail, isLoading, hasError, reviewId
                             {version.status}
                           </span>
                           {isActiveReviewVersion(version, detail) ? (
-                            <span className="inline-flex items-center rounded-full bg-brand-gradient px-2.5 py-0.5 text-xs font-medium text-white">
+                            <span className="inline-flex items-center rounded-full bg-[#202020] px-2.5 py-0.5 text-xs font-medium text-white">
                               {t('review.activeReviewVersion')}
                             </span>
                           ) : null}
@@ -169,6 +179,7 @@ export function ReviewSkillDetailSection({ detail, isLoading, hasError, reviewId
                         {version.changelog ? (
                           <p className="text-sm text-muted-foreground">{version.changelog}</p>
                         ) : null}
+                        <ComplianceSnapshotPanel snapshot={version.complianceSnapshot} />
                       </div>
                       <div className="text-sm text-muted-foreground">
                         {t('skillDetail.fileCount', { count: version.fileCount })}

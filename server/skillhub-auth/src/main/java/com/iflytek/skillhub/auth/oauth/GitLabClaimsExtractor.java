@@ -3,6 +3,7 @@ package com.iflytek.skillhub.auth.oauth;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
@@ -27,6 +28,15 @@ public class GitLabClaimsExtractor implements OAuthClaimsExtractor {
 
     private final RestClient restClient;
 
+    /**
+     * Uses an external-service client that is intentionally not customized with application
+     * tracing. Trace context must not be propagated to a user-configured GitLab host.
+     */
+    @Autowired
+    public GitLabClaimsExtractor() {
+        this(RestClient.builder());
+    }
+
     public GitLabClaimsExtractor(RestClient.Builder restClientBuilder) {
         this.restClient = restClientBuilder
             .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
@@ -48,7 +58,8 @@ public class GitLabClaimsExtractor implements OAuthClaimsExtractor {
 
         boolean emailVerified = isConfirmed(attrs.get("confirmed_at"));
 
-        log.debug("Initial email from GitLab: {}, verified: {}", email, emailVerified);
+        log.debug("Initial GitLab email state: emailPresent={}, emailVerified={}",
+                email != null && !email.isBlank(), emailVerified);
 
         // If email is not verified or not present, try to fetch from emails API
         if (email == null || !emailVerified) {
@@ -57,7 +68,7 @@ public class GitLabClaimsExtractor implements OAuthClaimsExtractor {
             if (primaryEmail != null) {
                 email = primaryEmail.email();
                 emailVerified = true;
-                log.debug("Found verified email from GitLab API: {}", email);
+                log.debug("Found verified email from GitLab API: emailPresent=true");
             } else {
                 log.debug("No verified email found from GitLab emails API");
             }
@@ -70,8 +81,11 @@ public class GitLabClaimsExtractor implements OAuthClaimsExtractor {
         }
 
         String subject = String.valueOf(attrs.get("id"));
-        log.info("GitLab OAuth claims extracted - subject: {}, username: {}, email: {}, emailVerified: {}",
-                subject, username, email, emailVerified);
+        log.info("GitLab OAuth claims extracted: subjectPresent={}, usernamePresent={}, emailPresent={}, emailVerified={}",
+                subject != null && !subject.isBlank(),
+                username != null && !username.isBlank(),
+                email != null && !email.isBlank(),
+                emailVerified);
 
         return new OAuthClaims(
             "gitlab",

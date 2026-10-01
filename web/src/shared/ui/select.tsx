@@ -1,21 +1,22 @@
 import * as React from 'react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { Check, ChevronDown, ChevronUp } from 'lucide-react'
+import { getPortalContainer } from '@/shared/lib/portal-container'
 import { cn } from '@/shared/lib/utils'
 
 export const SELECT_TRIGGER_CLASS_NAME = cn(
-  'flex h-11 w-full items-center justify-between gap-2 rounded-lg border border-border/60 bg-secondary/50 px-4 py-2 text-sm text-foreground',
-  'ring-offset-background transition-all duration-200',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:border-primary/50',
+  'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-1.5 text-sm text-foreground',
+  'ring-offset-background transition-[border-color,box-shadow,background-color] duration-150 ease-out',
+  'hover:border-border focus-visible:outline-none focus-visible:border-ring focus-visible:bg-card focus-visible:ring-4 focus-visible:ring-ring/15',
   'disabled:cursor-not-allowed disabled:opacity-50',
   'data-[placeholder]:text-muted-foreground [&>span]:line-clamp-1'
 )
 
 export const SELECT_CONTENT_CLASS_NAME = cn(
-  'z-50 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md',
-  'data-[state=open]:animate-in data-[state=closed]:animate-out',
-  'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-  'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+  'z-50 max-h-[var(--radix-select-content-available-height)] w-fit min-w-48 max-w-[18rem] overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-md',
+  // In-tree (no Portal): avoids React 19 removeChild races on route unmount.
+  // No exit animations: delayed unmount still races commits when Content was portaled.
+  'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
   'data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2',
   'data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2'
 )
@@ -43,6 +44,7 @@ const SelectTrigger = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <SelectPrimitive.Trigger
     ref={ref}
+    translate="no"
     className={cn(SELECT_TRIGGER_CLASS_NAME, className)}
     {...props}
   >
@@ -88,14 +90,15 @@ SelectScrollDownButton.displayName = SelectPrimitive.ScrollDownButton.displayNam
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = 'popper', ...props }, ref) => (
-  <SelectPrimitive.Portal>
+>(({ className, children, position = 'popper', sideOffset = 4, ...props }, ref) => {
+  const portalContainer = getPortalContainer()
+  const content = (
     <SelectPrimitive.Content
       ref={ref}
+      translate="no"
+      sideOffset={sideOffset}
       className={cn(
         SELECT_CONTENT_CLASS_NAME,
-        position === 'popper'
-          && 'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
         className
       )}
       position={position}
@@ -113,8 +116,17 @@ const SelectContent = React.forwardRef<
       </SelectPrimitive.Viewport>
       <SelectScrollDownButton />
     </SelectPrimitive.Content>
-  </SelectPrimitive.Portal>
-))
+  )
+
+  // Portal to the shared container when available (e.g. inside a Dialog) so
+  // the dropdown is not clipped by overflow:hidden / overflow-y-auto ancestors.
+  // In-tree still works fine for non-modal contexts.
+  if (portalContainer) {
+    return React.createElement(SelectPrimitive.Portal, { container: portalContainer }, content)
+  }
+
+  return content
+})
 
 SelectContent.displayName = SelectPrimitive.Content.displayName
 

@@ -12,6 +12,7 @@ import com.iflytek.skillhub.compat.dto.ClawHubUnstarResponse;
 import com.iflytek.skillhub.compat.dto.ClawHubWhoamiResponse;
 import com.iflytek.skillhub.controller.support.MultipartPackageExtractor;
 import com.iflytek.skillhub.controller.support.ZipPackageExtractor;
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.namespace.NamespaceRole;
 import com.iflytek.skillhub.domain.shared.exception.DomainNotFoundException;
@@ -20,16 +21,19 @@ import com.iflytek.skillhub.domain.skill.SkillVisibility;
 import com.iflytek.skillhub.domain.skill.service.SkillPublishService;
 import com.iflytek.skillhub.domain.skill.service.SkillQueryService;
 import com.iflytek.skillhub.domain.social.SkillStarService;
+import com.iflytek.skillhub.dto.SkillLabelDto;
 import com.iflytek.skillhub.dto.SkillSummaryResponse;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
+import com.iflytek.skillhub.service.SkillLabelProjectionService;
 import com.iflytek.skillhub.service.SkillSearchAppService;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriComponentsBuilder;
 
 /**
  * Compatibility-focused application service that keeps ClawHub transport logic
@@ -49,6 +53,8 @@ public class ClawHubCompatAppService {
     private final AuditLogService auditLogService;
     private final CompatSkillLookupService compatSkillLookupService;
     private final SkillStarService skillStarService;
+    private final RequestIdAccessor requestIdAccessor;
+    private final SkillLabelProjectionService skillLabelProjectionService;
 
     public ClawHubCompatAppService(CanonicalSlugMapper mapper,
                                    SkillSearchAppService skillSearchAppService,
@@ -58,7 +64,9 @@ public class ClawHubCompatAppService {
                                    MultipartPackageExtractor multipartPackageExtractor,
                                    AuditLogService auditLogService,
                                    CompatSkillLookupService compatSkillLookupService,
-                                   SkillStarService skillStarService) {
+                                   SkillStarService skillStarService,
+                                   RequestIdAccessor requestIdAccessor,
+                                   SkillLabelProjectionService skillLabelProjectionService) {
         this.mapper = mapper;
         this.skillSearchAppService = skillSearchAppService;
         this.skillQueryService = skillQueryService;
@@ -68,6 +76,8 @@ public class ClawHubCompatAppService {
         this.auditLogService = auditLogService;
         this.compatSkillLookupService = compatSkillLookupService;
         this.skillStarService = skillStarService;
+        this.requestIdAccessor = requestIdAccessor;
+        this.skillLabelProjectionService = skillLabelProjectionService;
     }
 
     public ClawHubSearchResponse search(String q,
@@ -131,9 +141,7 @@ public class ClawHubCompatAppService {
 
     public String downloadLocationByPath(String canonicalSlug, String version) {
         SkillCoordinate coord = mapper.fromCanonical(canonicalSlug);
-        return "latest".equals(version)
-                ? "/api/v1/skills/" + coord.namespace() + "/" + coord.slug() + "/download"
-                : "/api/v1/skills/" + coord.namespace() + "/" + coord.slug() + "/versions/" + version + "/download";
+        return buildDownloadLocation(coord, version);
     }
 
     public String downloadLocationByQuery(String slug,
@@ -141,9 +149,28 @@ public class ClawHubCompatAppService {
                                           String userId,
                                           Map<Long, NamespaceRole> userNsRoles) {
         SkillCoordinate coord = resolveQueryCoordinate(slug, userId, userNsRoles);
-        return "latest".equals(version)
-                ? "/api/v1/skills/" + coord.namespace() + "/" + coord.slug() + "/download"
-                : "/api/v1/skills/" + coord.namespace() + "/" + coord.slug() + "/versions/" + version + "/download";
+        return buildDownloadLocation(coord, version);
+    }
+
+    /**
+     * Builds the redirect Location for a download.
+     *
+     * <p>
+     * Each path segment is percent-encoded, because a non-ASCII slug (for example a
+     * Chinese skill name) cannot be written into the HTTP {@code Location} header as-is:
+     * Tomcat encodes header values as ISO-8859-1 and drops the header when a character
+     * falls outside 0-255, which breaks the ClawHub CLI download. Using
+     * {@code pathSegment(...)} keeps the '/' separators literal while encoding the
+     * segment contents.
+     */
+    private String buildDownloadLocation(SkillCoordinate coord, String version) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromPath("/api/v1/skills")
+                .pathSegment(coord.namespace(), coord.slug());
+        if (!"latest".equals(version)) {
+            builder.pathSegment("versions", version);
+        }
+        builder.pathSegment("download");
+        return builder.encode().toUriString();
     }
 
     private SkillCoordinate resolveQueryCoordinate(String slug,
@@ -174,6 +201,15 @@ public class ClawHubCompatAppService {
                                                String sort,
                                                String userId,
                                                Map<Long, NamespaceRole> userNsRoles) {
+        return listSkills(page, limit, sort, false, userId, userNsRoles);
+    }
+
+    public ClawHubSkillListResponse listSkills(int page,
+                                               int limit,
+                                               String sort,
+                                               boolean includeLabels,
+                                               String userId,
+                                               Map<Long, NamespaceRole> userNsRoles) {
         String sortBy = sort != null ? sort : "newest";
         SkillSearchAppService.SearchResponse response = skillSearchAppService.search(
                 "",
@@ -185,8 +221,15 @@ public class ClawHubCompatAppService {
                 userNsRoles
         );
 
+        Map<Long, List<SkillLabelDto>> labelsBySkillId = includeLabels
+                ? skillLabelProjectionService.labelsBySkillIds(
+                        response.items().stream().map(SkillSummaryResponse::id).toList())
+                : Map.of();
+
         List<ClawHubSkillListResponse.SkillListItem> items = response.items().stream()
-                .map(this::toSkillListItem)
+                .map(item -> toSkillListItem(
+                        item,
+                        includeLabels ? labelsBySkillId.getOrDefault(item.id(), List.of()) : null))
                 .toList();
 
         String nextCursor = null;
@@ -303,7 +346,7 @@ public class ClawHubCompatAppService {
                 confirmWarnings
         );
         recordCompatPublishAudit(principal.userId(), result.version().getId(), clientIp, userAgent,
-                "{\"namespace\":\"" + namespace + "\",\"slug\":\"" + extracted.payload().slug() + "\"}");
+                AuditDetail.of("namespace", namespace, "slug", extracted.payload().slug()));
         return new ClawHubPublishResponse(result.skillId().toString(), result.version().getId().toString());
     }
 
@@ -322,7 +365,7 @@ public class ClawHubCompatAppService {
                 confirmWarnings
         );
         recordCompatPublishAudit(principal.userId(), result.version().getId(), clientIp, userAgent,
-                "{\"namespace\":\"" + namespace + "\"}");
+                AuditDetail.of("namespace", namespace));
         return new ClawHubPublishResponse(result.skillId().toString(), result.version().getId().toString());
     }
 
@@ -362,7 +405,8 @@ public class ClawHubCompatAppService {
         return new ClawHubResolveResponse(matchVersion, latestVersion);
     }
 
-    private ClawHubSkillListResponse.SkillListItem toSkillListItem(SkillSummaryResponse item) {
+    private ClawHubSkillListResponse.SkillListItem toSkillListItem(SkillSummaryResponse item,
+                                                                   List<SkillLabelDto> labels) {
         long createdAt = 0;
         long updatedAt = item.updatedAt() != null ? item.updatedAt().toEpochMilli() : 0;
 
@@ -392,7 +436,8 @@ public class ClawHubCompatAppService {
                 stats,
                 createdAt,
                 updatedAt,
-                latestVersion
+                latestVersion,
+                labels
         );
     }
 
@@ -430,7 +475,7 @@ public class ClawHubCompatAppService {
                 "COMPAT_PUBLISH",
                 "SKILL_VERSION",
                 versionId,
-                MDC.get("requestId"),
+                requestIdAccessor.current(),
                 clientIp,
                 userAgent,
                 detailJson

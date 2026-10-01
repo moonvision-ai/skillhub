@@ -1,5 +1,8 @@
 package com.iflytek.skillhub.stream;
 
+import com.iflytek.skillhub.observability.MessageObservationSupport;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
+import io.micrometer.observation.ObservationRegistry;
 import io.lettuce.core.RedisBusyException;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.AutoClaimResult;
@@ -24,6 +27,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class AbstractStreamConsumerTest {
@@ -32,12 +36,44 @@ class AbstractStreamConsumerTest {
     void handleMessage_acknowledgesAfterSuccessfulProcessing() {
         @SuppressWarnings("unchecked")
         RStream<String, String> stream = mock(RStream.class);
-        TestConsumer consumer = new TestConsumer(stream);
         StreamMessageId messageId = new StreamMessageId(1, 0);
+        when(stream.ack("scan-group", messageId)).thenReturn(1L);
+        TestConsumer consumer = new TestConsumer(stream);
 
         consumer.handleMessage(messageId, Map.of("payload", "ok"));
 
         verify(stream).ack("scan-group", messageId);
+        verify(stream).remove(messageId);
+    }
+
+    @Test
+    void handleMessage_doesNotDeleteWhenAcknowledgementReturnsZero() {
+        @SuppressWarnings("unchecked")
+        RStream<String, String> stream = mock(RStream.class);
+        StreamMessageId messageId = new StreamMessageId(10, 0);
+        when(stream.ack("scan-group", messageId)).thenReturn(0L);
+        TestConsumer consumer = new TestConsumer(stream);
+
+        consumer.handleMessage(messageId, Map.of("payload", "ok"));
+
+        verify(stream).ack("scan-group", messageId);
+        verify(stream, never()).remove(messageId);
+    }
+
+    @Test
+    void handleMessage_doesNotDeleteWhenAcknowledgementFails() {
+        @SuppressWarnings("unchecked")
+        RStream<String, String> stream = mock(RStream.class);
+        StreamMessageId messageId = new StreamMessageId(11, 0);
+        when(stream.ack("scan-group", messageId))
+                .thenThrow(new RedisSystemException("redis unavailable", new IllegalStateException("offline")));
+        TestConsumer consumer = new TestConsumer(stream);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> consumer.handleMessage(messageId, Map.of("payload", "ok")))
+                .isInstanceOf(RedisSystemException.class);
+
+        verify(stream, never()).remove(messageId);
     }
 
     @Test
@@ -52,6 +88,22 @@ class AbstractStreamConsumerTest {
 
         verify(stream).ack("scan-group", messageId);
         verify(stream, times(1)).ack("scan-group", messageId);
+    }
+
+    @Test
+    void handleMessage_deferredFailureRemainsPending() {
+        @SuppressWarnings("unchecked")
+        RStream<String, String> stream = mock(RStream.class);
+        TestConsumer consumer = new TestConsumer(stream);
+        consumer.fail = true;
+        consumer.defer = true;
+        StreamMessageId messageId = new StreamMessageId(20, 0);
+
+        consumer.handleMessage(messageId, Map.of("payload", "busy"));
+
+        verify(stream, never()).ack("scan-group", messageId);
+        verify(stream, never()).remove(messageId);
+        assertThat(consumer.deferred).isTrue();
     }
 
     @Test
@@ -105,6 +157,25 @@ class AbstractStreamConsumerTest {
     }
 
     @Test
+    void handleMessage_restoresPropagatedRequestIdOnlyWhileProcessing() {
+        @SuppressWarnings("unchecked")
+        RStream<String, String> stream = mock(RStream.class);
+        RequestIdAccessor requestIdAccessor = new RequestIdAccessor();
+        TestConsumer consumer = new TestConsumer(stream, requestIdAccessor);
+
+        consumer.handleMessage(
+                new StreamMessageId(8, 0),
+                Map.of(
+                        "payload", "correlated",
+                        MessageObservationSupport.REQUEST_ID_FIELD, "request-stream-1"
+                )
+        );
+
+        assertThat(consumer.processedRequestId).isEqualTo("request-stream-1");
+        assertThat(requestIdAccessor.current()).isNull();
+    }
+
+    @Test
     void detectsBusyGroupWhenWrappedInRedisSystemException() {
         RedisSystemException wrapped = new RedisSystemException(
                 "Error in execution",
@@ -116,11 +187,29 @@ class AbstractStreamConsumerTest {
 
     private static class TestConsumer extends AbstractStreamConsumer<String> {
         private final RStream<String, String> stream;
+        private final RequestIdAccessor requestIdAccessor;
         private boolean fail;
+        private boolean defer;
+        private boolean deferred;
+        private String processedRequestId;
 
         private TestConsumer(RStream<String, String> stream) {
-            super(mock(RedissonClient.class), "scan-stream", "scan-group", true, Duration.ofMinutes(2), 20, Duration.ofSeconds(30));
+            this(stream, new RequestIdAccessor());
+        }
+
+        private TestConsumer(RStream<String, String> stream, RequestIdAccessor requestIdAccessor) {
+            super(
+                    mock(RedissonClient.class),
+                    "scan-stream",
+                    "scan-group",
+                    true,
+                    Duration.ofMinutes(2),
+                    20,
+                    Duration.ofSeconds(30),
+                    new MessageObservationSupport(ObservationRegistry.NOOP, requestIdAccessor)
+            );
             this.stream = stream;
+            this.requestIdAccessor = requestIdAccessor;
         }
 
         @Override
@@ -154,6 +243,7 @@ class AbstractStreamConsumerTest {
 
         @Override
         protected void processBusiness(String payload) {
+            processedRequestId = requestIdAccessor.current();
             if (fail) {
                 throw new IllegalStateException("boom");
             }
@@ -169,6 +259,16 @@ class AbstractStreamConsumerTest {
 
         @Override
         protected void retryMessage(String payload, int retryCount) {
+        }
+
+        @Override
+        protected boolean shouldDeferFailure(String payload, Exception error) {
+            return defer;
+        }
+
+        @Override
+        protected void markDeferred(String payload, Exception error) {
+            deferred = true;
         }
     }
 

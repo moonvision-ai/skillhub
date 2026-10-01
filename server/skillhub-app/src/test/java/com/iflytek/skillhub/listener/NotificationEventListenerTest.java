@@ -4,12 +4,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iflytek.skillhub.domain.event.*;
 import com.iflytek.skillhub.domain.namespace.Namespace;
 import com.iflytek.skillhub.domain.namespace.NamespaceRepository;
+import com.iflytek.skillhub.domain.namespace.NamespaceMemberRepository;
+import com.iflytek.skillhub.domain.namespace.NamespaceMember;
+import com.iflytek.skillhub.domain.namespace.NamespaceRole;
+import com.iflytek.skillhub.domain.namespace.NamespaceStatus;
 import com.iflytek.skillhub.domain.skill.Skill;
 import com.iflytek.skillhub.domain.skill.SkillRepository;
 import com.iflytek.skillhub.domain.skill.SkillVisibility;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
+import com.iflytek.skillhub.domain.social.SkillSubscriptionService;
+import com.iflytek.skillhub.domain.social.SubscriptionRecipientEligibility;
+import com.iflytek.skillhub.domain.social.SubscriptionMetadataAccessPolicy;
+import com.iflytek.skillhub.domain.user.UserAccount;
+import com.iflytek.skillhub.domain.user.UserAccountRepository;
+import com.iflytek.skillhub.domain.user.UserStatus;
 import com.iflytek.skillhub.notification.domain.NotificationCategory;
-import com.iflytek.skillhub.notification.service.NotificationDispatcher;
+import com.iflytek.skillhub.notification.service.NotificationService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -29,11 +39,22 @@ class NotificationEventListenerTest {
     @Mock SkillVersionRepository skillVersionRepository;
     @Mock NamespaceRepository namespaceRepository;
     @Mock RecipientResolver recipientResolver;
-    @Mock NotificationDispatcher dispatcher;
+    @Mock NotificationService notificationService;
     @Mock ObjectMapper objectMapper;
+    @Mock SkillSubscriptionService skillSubscriptionService;
+    @Mock UserAccountRepository userAccountRepository;
+    @Mock NamespaceMemberRepository namespaceMemberRepository;
 
     @InjectMocks
     NotificationEventListener listener;
+
+    @org.junit.jupiter.api.BeforeEach
+    void setUpListener() {
+        listener = new NotificationEventListener(skillRepository, skillVersionRepository, namespaceRepository,
+                recipientResolver, notificationService, skillSubscriptionService, objectMapper,
+                new SubscriptionRecipientEligibility(userAccountRepository, namespaceMemberRepository,
+                        new SubscriptionMetadataAccessPolicy()));
+    }
 
     private Skill mockSkill(Long id) {
         Skill skill = mock(Skill.class);
@@ -77,7 +98,7 @@ class NotificationEventListenerTest {
 
         listener.onSkillPublished(new SkillPublishedEvent(1L, 10L, "publisher-1"));
 
-        verify(dispatcher).dispatch(eq("publisher-1"), eq(NotificationCategory.PUBLISH),
+        verify(notificationService).create(eq("publisher-1"), eq(NotificationCategory.PUBLISH),
                 eq("SKILL_PUBLISHED"), anyString(), anyString(), eq("SKILL"), eq(1L));
     }
 
@@ -88,7 +109,7 @@ class NotificationEventListenerTest {
 
         listener.onSkillPublished(new SkillPublishedEvent(1L, 10L, "reviewer-1"));
 
-        verifyNoInteractions(dispatcher);
+        verifyNoInteractions(notificationService);
     }
 
     @Test
@@ -99,7 +120,7 @@ class NotificationEventListenerTest {
 
         listener.onSkillPublished(new SkillPublishedEvent(1L, 10L, "reviewer-1"));
 
-        verifyNoInteractions(dispatcher);
+        verifyNoInteractions(notificationService);
     }
 
     @Test
@@ -108,7 +129,7 @@ class NotificationEventListenerTest {
 
         listener.onSkillPublished(new SkillPublishedEvent(99L, 10L, "publisher-1"));
 
-        verifyNoInteractions(dispatcher);
+        verifyNoInteractions(notificationService);
     }
 
     @Test
@@ -121,10 +142,10 @@ class NotificationEventListenerTest {
 
         listener.onReviewSubmitted(new ReviewSubmittedEvent(100L, 1L, 10L, "submitter-1", 5L));
 
-        verify(dispatcher, times(2)).dispatch(anyString(), eq(NotificationCategory.REVIEW),
+        verify(notificationService, times(2)).create(anyString(), eq(NotificationCategory.REVIEW),
                 eq("REVIEW_SUBMITTED"), anyString(), anyString(), eq("REVIEW"), eq(100L));
-        verify(dispatcher).dispatch(eq("admin-1"), any(), any(), any(), any(), any(), any());
-        verify(dispatcher).dispatch(eq("admin-2"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("admin-1"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("admin-2"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -136,10 +157,10 @@ class NotificationEventListenerTest {
         listener.onProfileReviewSubmitted(
                 new ProfileReviewSubmittedEvent(77L, "submitter-1", List.of("displayName")));
 
-        verify(dispatcher, times(2)).dispatch(anyString(), eq(NotificationCategory.REVIEW),
+        verify(notificationService, times(2)).create(anyString(), eq(NotificationCategory.REVIEW),
                 eq("PROFILE_REVIEW_SUBMITTED"), anyString(), anyString(), eq("PROFILE_REVIEW"), eq(77L));
-        verify(dispatcher).dispatch(eq("user-admin-1"), any(), any(), any(), any(), any(), any());
-        verify(dispatcher).dispatch(eq("super-admin-1"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("user-admin-1"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("super-admin-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -151,7 +172,7 @@ class NotificationEventListenerTest {
 
         listener.onReviewApproved(new ReviewApprovedEvent(100L, 1L, 10L, "reviewer-1", "submitter-1"));
 
-        verify(dispatcher).dispatch(eq("submitter-1"), eq(NotificationCategory.REVIEW),
+        verify(notificationService).create(eq("submitter-1"), eq(NotificationCategory.REVIEW),
                 eq("REVIEW_APPROVED"), anyString(), anyString(), eq("SKILL"), eq(1L));
     }
 
@@ -166,10 +187,10 @@ class NotificationEventListenerTest {
 
         listener.onPromotionSubmitted(new PromotionSubmittedEvent(200L, 1L, 10L, "submitter-1"));
 
-        verify(dispatcher, times(2)).dispatch(anyString(), eq(NotificationCategory.PROMOTION),
+        verify(notificationService, times(2)).create(anyString(), eq(NotificationCategory.PROMOTION),
                 eq("PROMOTION_SUBMITTED"), anyString(), anyString(), eq("PROMOTION"), eq(200L));
-        verify(dispatcher).dispatch(eq("platform-admin-1"), any(), any(), any(), any(), any(), any());
-        verify(dispatcher).dispatch(eq("super-admin-1"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("platform-admin-1"), any(), any(), any(), any(), any(), any());
+        verify(notificationService).create(eq("super-admin-1"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -183,7 +204,7 @@ class NotificationEventListenerTest {
 
         listener.onPromotionSubmitted(new PromotionSubmittedEvent(200L, 1L, 10L, "submitter-1"));
 
-        verify(dispatcher, times(1)).dispatch(eq("platform-admin-1"), eq(NotificationCategory.PROMOTION),
+        verify(notificationService, times(1)).create(eq("platform-admin-1"), eq(NotificationCategory.PROMOTION),
                 eq("PROMOTION_SUBMITTED"), anyString(), anyString(), eq("PROMOTION"), eq(200L));
     }
 
@@ -196,7 +217,7 @@ class NotificationEventListenerTest {
 
         listener.onPromotionApproved(new PromotionApprovedEvent(200L, 1L, "self-admin", "self-admin"));
 
-        verify(dispatcher).dispatch(eq("self-admin"), eq(NotificationCategory.PROMOTION),
+        verify(notificationService).create(eq("self-admin"), eq(NotificationCategory.PROMOTION),
                 eq("PROMOTION_APPROVED"), anyString(), anyString(), eq("SKILL"), eq(1L));
     }
 
@@ -209,7 +230,7 @@ class NotificationEventListenerTest {
 
         listener.onPromotionRejected(new PromotionRejectedEvent(200L, 1L, "self-admin", "self-admin", "not ready"));
 
-        verify(dispatcher).dispatch(eq("self-admin"), eq(NotificationCategory.PROMOTION),
+        verify(notificationService).create(eq("self-admin"), eq(NotificationCategory.PROMOTION),
                 eq("PROMOTION_REJECTED"), anyString(), anyString(), eq("SKILL"), eq(1L));
     }
 
@@ -222,7 +243,156 @@ class NotificationEventListenerTest {
 
         listener.onReportResolved(new ReportResolvedEvent(300L, 1L, "handler-1", "reporter-1", "DISMISSED"));
 
-        verify(dispatcher).dispatch(eq("reporter-1"), eq(NotificationCategory.REPORT),
+        verify(notificationService).create(eq("reporter-1"), eq(NotificationCategory.REPORT),
                 eq("REPORT_RESOLVED"), anyString(), anyString(), eq("SKILL"), eq(1L));
+    }
+
+    @Test
+    void publishSubscriberFanoutExcludesInactiveAccount() {
+        Skill skill = skill(1L, "owner", "owner");
+        skill.setLatestVersionId(10L);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("inactive"));
+        UserAccount inactive = new UserAccount("inactive", "Inactive", null, null);
+        inactive.setStatus(UserStatus.DISABLED);
+        when(userAccountRepository.findByIdIn(List.of("inactive"))).thenReturn(List.of(inactive));
+        mockNamespace();
+
+        listener.onSkillPublishedForSubscribers(new SkillPublishedEvent(1L, 10L, "owner"));
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void publishSubscriberFanoutFailsClosedBeforeDispatchWhenAccountBatchFails() {
+        Skill skill = skill(1L, "owner", "owner");
+        skill.setLatestVersionId(10L);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("user-1", "user-2"));
+        when(userAccountRepository.findByIdIn(anyList())).thenThrow(new IllegalStateException("account batch unavailable"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                listener.onSkillPublishedForSubscribers(new SkillPublishedEvent(1L, 10L, "owner")))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void publishSubscriberFanoutDispatchesOnlyEligibleNonPublisherWithExactPayload() throws Exception {
+        Skill skill = skill(1L, "publisher", "publisher");
+        skill.setLatestVersionId(10L);
+        skill.setVisibility(SkillVisibility.PRIVATE);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L))
+                .thenReturn(List.of("publisher", "admin", "member", "inactive", "missing"));
+        UserAccount publisher = new UserAccount("publisher", "Publisher", null, null);
+        UserAccount admin = new UserAccount("admin", "Admin", null, null);
+        UserAccount member = new UserAccount("member", "Member", null, null);
+        UserAccount inactive = new UserAccount("inactive", "Inactive", null, null);
+        inactive.setStatus(UserStatus.DISABLED);
+        when(userAccountRepository.findByIdIn(anyList())).thenReturn(List.of(publisher, admin, member, inactive));
+        when(namespaceMemberRepository.findByNamespaceIdAndUserIdIn(eq(5L), anyCollection()))
+                .thenReturn(List.of(new NamespaceMember(5L, "admin", NamespaceRole.ADMIN),
+                        new NamespaceMember(5L, "member", NamespaceRole.MEMBER)));
+        mockNamespace();
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"skillId\":1,\"version\":\"1.0.0\"}");
+
+        listener.onSkillPublishedForSubscribers(new SkillPublishedEvent(1L, 10L, "publisher"));
+
+        verify(notificationService).create("admin", NotificationCategory.PUBLISH, "SUBSCRIPTION_NEW_VERSION",
+                "Skill updated: Test Skill", "{\"skillId\":1,\"version\":\"1.0.0\"}", "SKILL", 1L);
+        verifyNoMoreInteractions(notificationService);
+    }
+
+    @Test
+    void yankWithoutFallbackUsesVerifiedPreYankPublicationAndExcludesActor() throws Exception {
+        Skill skill = skill(1L, "owner", "owner");
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("actor", "subscriber"));
+        when(userAccountRepository.findByIdIn(anyList())).thenReturn(List.of(
+                new UserAccount("actor", "Actor", null, null),
+                new UserAccount("subscriber", "Subscriber", null, null)));
+        mockNamespace();
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"skillId\":1,\"versionId\":10}");
+
+        listener.onSkillVersionYankedForSubscribers(new SkillVersionYankedEvent(1L, 10L, "actor", true));
+
+        verify(notificationService).create("subscriber", NotificationCategory.PUBLISH, "SUBSCRIPTION_VERSION_YANKED",
+                "Skill version yanked: Test Skill", "{\"skillId\":1,\"versionId\":10}", "SKILL", 1L);
+        verifyNoMoreInteractions(notificationService);
+    }
+
+    @Test
+    void yankDoesNotDispatchWhenEventDoesNotVerifyPublishedPreState() {
+        Skill skill = skill(1L, "owner", "owner");
+        skill.setLatestVersionId(9L);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("subscriber"));
+        when(userAccountRepository.findByIdIn(anyList())).thenReturn(List.of(
+                new UserAccount("subscriber", "Subscriber", null, null)));
+        mockNamespace();
+
+        listener.onSkillVersionYankedForSubscribers(new SkillVersionYankedEvent(1L, 10L, "actor", false));
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void publishFanoutFailsClosedBeforeDispatchWhenNamespaceReadFails() {
+        Skill skill = skill(1L, "owner", "owner");
+        skill.setLatestVersionId(10L);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("user-1"));
+        when(namespaceRepository.findById(5L)).thenThrow(new IllegalStateException("namespace unavailable"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                listener.onSkillPublishedForSubscribers(new SkillPublishedEvent(1L, 10L, "owner")))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void yankFanoutFailsClosedBeforeDispatchWhenMembershipBatchFails() {
+        Skill skill = skill(1L, "owner", "owner");
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("user-1", "user-2"));
+        when(userAccountRepository.findByIdIn(anyList())).thenReturn(List.of(
+                new UserAccount("user-1", "One", null, null),
+                new UserAccount("user-2", "Two", null, null)));
+        when(namespaceRepository.findById(5L))
+                .thenReturn(Optional.of(new Namespace("demo", "Demo", "owner")));
+        when(namespaceMemberRepository.findByNamespaceIdAndUserIdIn(eq(5L), anyCollection()))
+                .thenThrow(new IllegalStateException("membership unavailable"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                listener.onSkillVersionYankedForSubscribers(new SkillVersionYankedEvent(1L, 10L, "actor", true)))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void archivedNamespaceRemovedSubscriberIsRejectedButCurrentMemberReceivesYank() throws Exception {
+        Skill skill = skill(1L, "owner", "owner");
+        skill.setStatus(com.iflytek.skillhub.domain.skill.SkillStatus.ARCHIVED);
+        when(skillRepository.findById(1L)).thenReturn(Optional.of(skill));
+        when(skillSubscriptionService.findSubscribersBySkillId(1L)).thenReturn(List.of("current", "removed"));
+        when(userAccountRepository.findByIdIn(anyList())).thenReturn(List.of(
+                new UserAccount("current", "Current", null, null),
+                new UserAccount("removed", "Removed", null, null)));
+        Namespace namespace = new Namespace("archived", "Archived", "owner");
+        namespace.setStatus(NamespaceStatus.ARCHIVED);
+        when(namespaceRepository.findById(5L)).thenReturn(Optional.of(namespace));
+        when(namespaceMemberRepository.findByNamespaceIdAndUserIdIn(eq(5L), anyCollection()))
+                .thenReturn(List.of(new NamespaceMember(5L, "current", NamespaceRole.MEMBER)));
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+
+        listener.onSkillVersionYankedForSubscribers(new SkillVersionYankedEvent(1L, 10L, "actor", true));
+
+        verify(notificationService).create(eq("current"), eq(NotificationCategory.PUBLISH),
+                eq("SUBSCRIPTION_VERSION_YANKED"), anyString(), eq("{}"), eq("SKILL"), eq(1L));
+        verifyNoMoreInteractions(notificationService);
     }
 }

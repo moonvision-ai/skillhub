@@ -2,16 +2,18 @@
 set -euo pipefail
 
 BASE_URL="${1:-http://localhost:8080}"
+ACTUATOR_BASE_URL="${ACTUATOR_BASE_URL:-$BASE_URL}"
 PASS=0
 FAIL=0
-COOKIE_JAR="$(mktemp)"
+TMP_DIR="$(mktemp -d)"
+COOKIE_JAR="$TMP_DIR/cookies"
 USERNAME="smoketest_$(date +%s)"
 EMAIL="${USERNAME}@example.com"
 PASSWORD="Smoke@2026"
 NEW_PASSWORD="Smoke@2027"
 
 cleanup() {
-  rm -f "$COOKIE_JAR"
+  rm -rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
@@ -31,12 +33,69 @@ check() {
   fi
 }
 
+check_health() {
+  local desc="$1"
+  local url="$2"
+  local body_file="$TMP_DIR/health-body"
+  local result
+  local status
+  local content_type
+  result="$(curl --retry 3 --retry-delay 1 --max-time 10 -sS -o "$body_file" \
+    -w "%{http_code}|%{content_type}" "$url" || true)"
+  status="${result%%|*}"
+  content_type="${result#*|}"
+
+  if [[ "$content_type" == text/html* ]]; then
+    echo "FAIL: $desc (routing/target error: received $content_type from $url)"
+    FAIL=$((FAIL + 1))
+  elif [[ "$status" == "200" \
+    && ( "$content_type" == application/json* || "$content_type" == application/*+json* ) \
+    && -f "$body_file" \
+    && "$(grep -Ec '"status"[[:space:]]*:' "$body_file" || true)" -gt 0 ]]; then
+    echo "PASS: $desc (HTTP $status, $content_type)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $desc (expected HTTP 200 actuator JSON, got HTTP $status, ${content_type:-no content type})"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+check_protected_actuator() {
+  local desc="$1"
+  local url="$2"
+  local result
+  local status
+  local content_type
+  result="$(curl --retry 3 --retry-delay 1 --max-time 10 -sS -o /dev/null \
+    -w "%{http_code}|%{content_type}" "$url" || true)"
+  status="${result%%|*}"
+  content_type="${result#*|}"
+
+  if [[ "$content_type" == text/html* ]]; then
+    echo "FAIL: $desc (routing/target error: received $content_type from $url)"
+    FAIL=$((FAIL + 1))
+  elif [[ "$status" == "401" ]]; then
+    echo "PASS: $desc (HTTP $status)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $desc (expected 401, got $status)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+finish() {
+  echo
+  echo "Results: $PASS passed, $FAIL failed"
+  [[ "$FAIL" -eq 0 ]]
+}
+
 echo "=== SkillHub Smoke Test ==="
-echo "Target: $BASE_URL"
+echo "API target: $BASE_URL"
+echo "Actuator target: $ACTUATOR_BASE_URL"
 echo
 
-check "Health endpoint" "$BASE_URL/actuator/health" "200"
-check "Prometheus metrics requires auth" "$BASE_URL/actuator/prometheus" "401"
+check_health "Health endpoint" "$ACTUATOR_BASE_URL/actuator/health"
+check_protected_actuator "Prometheus metrics requires auth" "$ACTUATOR_BASE_URL/actuator/prometheus"
 check "Namespaces API requires auth" "$BASE_URL/api/v1/namespaces" "401"
 check "Auth required" "$BASE_URL/api/v1/auth/me" "401"
 
@@ -113,8 +172,30 @@ else
 fi
 
 # ---- Label Management (requires admin) ----
-ADMIN_USERNAME="${BOOTSTRAP_ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-ChangeMe!2026}"
+SMOKE_ADMIN_CHECKS="${SMOKE_ADMIN_CHECKS:-auto}"
+SMOKE_ADMIN_USERNAME="${SMOKE_ADMIN_USERNAME:-}"
+SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-}"
+ADMIN_CONFIG_FAILED=0
+if [[ "$SMOKE_ADMIN_CHECKS" != "auto" && "$SMOKE_ADMIN_CHECKS" != "true" && "$SMOKE_ADMIN_CHECKS" != "false" ]]; then
+  echo "FAIL: SMOKE_ADMIN_CHECKS must be auto, true, or false"
+  FAIL=$((FAIL + 1))
+  ADMIN_CONFIG_FAILED=1
+fi
+if [[ "$SMOKE_ADMIN_CHECKS" == "true" && ( -z "$SMOKE_ADMIN_USERNAME" || -z "$SMOKE_ADMIN_PASSWORD" ) ]]; then
+  echo "FAIL: SMOKE_ADMIN_CHECKS=true requires SMOKE_ADMIN_USERNAME and SMOKE_ADMIN_PASSWORD"
+  FAIL=$((FAIL + 1))
+  ADMIN_CONFIG_FAILED=1
+fi
+if [[ "$ADMIN_CONFIG_FAILED" -ne 0 ]]; then
+  finish
+  exit $?
+fi
+if [[ "$SMOKE_ADMIN_CHECKS" == "false" || ( "$SMOKE_ADMIN_CHECKS" == "auto" && ( -z "$SMOKE_ADMIN_USERNAME" || -z "$SMOKE_ADMIN_PASSWORD" ) ) ]]; then
+  echo "SKIP: Admin label management (set SMOKE_ADMIN_USERNAME and SMOKE_ADMIN_PASSWORD to enable)"
+  finish
+  exit $?
+fi
+
 ADMIN_COOKIE_JAR="$(mktemp)"
 LABEL_SLUG="smoke-label-$(date +%s)"
 
@@ -134,7 +215,7 @@ ADMIN_LOGIN_STATUS="$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" \
   -c "$ADMIN_COOKIE_JAR" \
   -H "X-XSRF-TOKEN: $ADMIN_CSRF" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" || true)"
+  -d "{\"username\":\"$SMOKE_ADMIN_USERNAME\",\"password\":\"$SMOKE_ADMIN_PASSWORD\"}" || true)"
 if [[ "$ADMIN_LOGIN_STATUS" == "200" ]]; then
   echo "PASS: Admin login (HTTP $ADMIN_LOGIN_STATUS)"
   PASS=$((PASS + 1))
@@ -196,8 +277,4 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-echo
-echo "Results: $PASS passed, $FAIL failed"
-if [[ "$FAIL" -ne 0 ]]; then
-  exit 1
-fi
+finish

@@ -2,12 +2,13 @@ package com.iflytek.skillhub.controller;
 
 import com.iflytek.skillhub.auth.device.DeviceAuthService;
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.dto.ApiResponse;
 import com.iflytek.skillhub.dto.ApiResponseFactory;
 import com.iflytek.skillhub.dto.MessageResponse;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import jakarta.servlet.http.HttpServletRequest;
-import org.slf4j.MDC;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,13 +25,16 @@ public class DeviceAuthWebController extends BaseApiController {
 
     private final DeviceAuthService deviceAuthService;
     private final AuditLogService auditLogService;
+    private final RequestIdAccessor requestIdAccessor;
 
     public DeviceAuthWebController(ApiResponseFactory responseFactory,
                                    DeviceAuthService deviceAuthService,
-                                   AuditLogService auditLogService) {
+                                   AuditLogService auditLogService,
+                                   RequestIdAccessor requestIdAccessor) {
         super(responseFactory);
         this.deviceAuthService = deviceAuthService;
         this.auditLogService = auditLogService;
+        this.requestIdAccessor = requestIdAccessor;
     }
 
     @PostMapping("/authorize")
@@ -45,10 +49,10 @@ public class DeviceAuthWebController extends BaseApiController {
             "DEVICE_AUTHORIZE",
             "DEVICE_CODE",
             null,
-            MDC.get("requestId"),
+            requestIdAccessor.current(),
             httpRequest.getRemoteAddr(),
             httpRequest.getHeader("User-Agent"),
-            "{\"userCode\":\"" + request.userCode() + "\"}"
+            AuditDetail.of("userCode", request.userCode())
         );
         return ok("response.success.updated", new MessageResponse("Device authorized successfully"));
     }

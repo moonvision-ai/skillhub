@@ -1,6 +1,7 @@
 package com.iflytek.skillhub.service;
 
 import com.iflytek.skillhub.auth.rbac.RbacService;
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.namespace.NamespaceRole;
 import com.iflytek.skillhub.domain.review.PromotionRequest;
@@ -12,17 +13,18 @@ import com.iflytek.skillhub.domain.shared.exception.DomainForbiddenException;
 import com.iflytek.skillhub.domain.shared.exception.DomainNotFoundException;
 import com.iflytek.skillhub.dto.PageResponse;
 import com.iflytek.skillhub.dto.PromotionResponseDto;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import com.iflytek.skillhub.repository.GovernanceQueryRepository;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import org.slf4j.MDC;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PromotionPortalAppService {
@@ -32,19 +34,23 @@ public class PromotionPortalAppService {
     private final GovernanceQueryRepository governanceQueryRepository;
     private final RbacService rbacService;
     private final AuditLogService auditLogService;
+    private final RequestIdAccessor requestIdAccessor;
 
     public PromotionPortalAppService(PromotionService promotionService,
                                      PromotionRequestRepository promotionRequestRepository,
                                      GovernanceQueryRepository governanceQueryRepository,
                                      RbacService rbacService,
-                                     AuditLogService auditLogService) {
+                                     AuditLogService auditLogService,
+                                     RequestIdAccessor requestIdAccessor) {
         this.promotionService = promotionService;
         this.promotionRequestRepository = promotionRequestRepository;
         this.governanceQueryRepository = governanceQueryRepository;
         this.rbacService = rbacService;
         this.auditLogService = auditLogService;
+        this.requestIdAccessor = requestIdAccessor;
     }
 
+    @Transactional
     public PromotionResponseDto submitPromotion(Long sourceSkillId,
                                                 Long sourceVersionId,
                                                 Long targetNamespaceId,
@@ -64,11 +70,12 @@ public class PromotionPortalAppService {
                 userId,
                 promotion.getId(),
                 auditContext,
-                "{\"sourceSkillId\":" + sourceSkillId + ",\"sourceVersionId\":" + sourceVersionId + "}"
+                AuditDetail.of("sourceSkillId", sourceSkillId, "sourceVersionId", sourceVersionId)
         );
         return governanceQueryRepository.getPromotionResponse(promotion);
     }
 
+    @Transactional
     public PromotionResponseDto approvePromotion(Long promotionId,
                                                  String comment,
                                                  String userId,
@@ -84,6 +91,7 @@ public class PromotionPortalAppService {
         return governanceQueryRepository.getPromotionResponse(promotion);
     }
 
+    @Transactional
     public PromotionResponseDto rejectPromotion(Long promotionId,
                                                 String comment,
                                                 String userId,
@@ -235,7 +243,7 @@ public class PromotionPortalAppService {
                 action,
                 "PROMOTION_REQUEST",
                 targetId,
-                MDC.get("requestId"),
+                requestIdAccessor.current(),
                 auditContext != null ? auditContext.clientIp() : null,
                 auditContext != null ? auditContext.userAgent() : null,
                 detailJson
@@ -244,24 +252,9 @@ public class PromotionPortalAppService {
 
     private String detailWithComment(String comment, boolean selfReview) {
         boolean hasComment = comment != null && !comment.isBlank();
-        if (!hasComment && !selfReview) {
-            return null;
-        }
-        StringBuilder detail = new StringBuilder("{");
-        if (hasComment) {
-            detail.append("\"comment\":\"").append(escapeJson(comment)).append("\"");
-        }
-        if (selfReview) {
-            if (hasComment) {
-                detail.append(",");
-            }
-            detail.append("\"selfReview\":true");
-        }
-        detail.append("}");
-        return detail.toString();
-    }
-
-    private String escapeJson(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+        return AuditDetail.builder()
+                .put("comment", hasComment ? comment : null)
+                .put("selfReview", selfReview ? Boolean.TRUE : null)
+                .build();
     }
 }

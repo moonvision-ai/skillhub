@@ -1,24 +1,30 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { Card } from '@/shared/ui/card'
 import { Button } from '@/shared/ui/button'
-import { getCurrentUser, tokenApi } from '@/api/client'
+import { getAppBaseUrl, getCurrentUser, tokenApi } from '@/api/client'
 import type { User } from '@/api/types'
 import { ORIGINAL_URL_SEARCH } from '@/app/router'
-import { requestedCliTokenScopes, requiresDeleteConsent } from '@/features/auth/cli-auth-request'
+import { BASE_PATH } from '@/shared/lib/base-path'
+import { resolvePublicRegistryUrl } from '@/shared/lib/registry-url'
 
 // Parse the original URL params captured before TanStack Router rewrites
 const ORIGINAL_PARAMS = new URLSearchParams(ORIGINAL_URL_SEARCH)
 
-function isValidRedirectUri(uri: string): boolean {
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+export function resolveLoopbackRedirectUri(uri: string): URL | null {
   try {
     const url = new URL(uri)
-    // Only allow localhost/127.0.0.1/::1 on HTTP
-    const validHosts = ['localhost', '127.0.0.1', '[::1]', '::1']
-    return url.protocol === 'http:' && validHosts.includes(url.hostname.toLowerCase())
+    const isLoopbackHttp = url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname.toLowerCase())
+    if (!isLoopbackHttp || url.username || url.password) {
+      return null
+    }
+    url.hash = ''
+    return url
   } catch {
-    return false
+    return null
   }
 }
 
@@ -35,12 +41,16 @@ function decodeLabel(labelB64?: string, labelPlain?: string): string {
   return labelPlain || 'CLI token'
 }
 
+export function resolveCliRegistryUrl(appBaseUrl: string | undefined, origin: string, basePath = BASE_PATH): string {
+  return resolvePublicRegistryUrl(appBaseUrl, origin, basePath)
+}
+
 export function CliAuthPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
 
   const [user, setUser] = useState<User | null | undefined>(undefined)
-  const [status, setStatus] = useState<'validating' | 'consent' | 'creating' | 'redirecting' | 'error'>('validating')
+  const [status, setStatus] = useState<'validating' | 'creating' | 'redirecting' | 'error'>('validating')
   const [errorMessage, setErrorMessage] = useState<string>('')
   const [token, setToken] = useState<string>('')
 
@@ -50,8 +60,10 @@ export function CliAuthPage() {
   const labelB64 = ORIGINAL_PARAMS.get('label_b64')?.trim() || undefined
   const labelPlain = ORIGINAL_PARAMS.get('label')?.trim() || undefined
   const label = decodeLabel(labelB64, labelPlain)
-  const allowDelete = ORIGINAL_PARAMS.get('allow_delete')
-  const [deleteConfirmed, setDeleteConfirmed] = useState(false)
+  const redirectTarget = useMemo(
+    () => redirectUri ? resolveLoopbackRedirectUri(redirectUri) : null,
+    [redirectUri],
+  )
 
   useEffect(() => {
     // Check authentication status
@@ -79,7 +91,7 @@ export function CliAuthPage() {
     }
 
     // Validate redirect_uri
-    if (!redirectUri || !isValidRedirectUri(redirectUri)) {
+    if (!redirectTarget) {
       setStatus('error')
       setErrorMessage(t('cliAuth.invalidRedirectUri'))
       return
@@ -97,39 +109,35 @@ export function CliAuthPage() {
       return
     }
 
-    if (requiresDeleteConsent(allowDelete) && !deleteConfirmed) {
-      setStatus('consent')
-      return
-    }
-
     // Create token and redirect
     setStatus('creating')
     tokenApi
       .createToken({
         name: label,
-        scopes: requestedCliTokenScopes(allowDelete),
+        scopes: ['skill:read', 'skill:publish'],
       })
       .then((response) => {
         setToken(response.token)
         setStatus('redirecting')
 
         // Construct redirect URL with token in hash fragment
-        const registryUrl = window.location.origin
+        const registryUrl = resolveCliRegistryUrl(getAppBaseUrl(), window.location.origin)
         const hashParams = new URLSearchParams()
         hashParams.set('token', response.token)
         hashParams.set('registry', registryUrl)
         hashParams.set('state', state)
 
-        const redirectUrl = `${redirectUri}#${hashParams.toString()}`
+        const redirectUrl = new URL(redirectTarget.href)
+        redirectUrl.hash = hashParams.toString()
 
         // Redirect to CLI's loopback server
-        window.location.assign(redirectUrl)
+        window.location.assign(redirectUrl.href)
       })
       .catch((error) => {
         setStatus('error')
         setErrorMessage(error instanceof Error ? error.message : t('cliAuth.tokenCreationFailed'))
       })
-  }, [user, redirectUri, state, label, allowDelete, deleteConfirmed, t])
+  }, [user, redirectUri, redirectTarget, state, label, t])
 
   if (status === 'validating') {
     return (
@@ -158,20 +166,6 @@ export function CliAuthPage() {
           </div>
           <h1 className="text-2xl font-bold font-heading">{t('cliAuth.creatingToken')}</h1>
           <p className="text-muted-foreground">{t('cliAuth.almostThere')}</p>
-        </Card>
-      </div>
-    )
-  }
-
-  if (status === 'consent') {
-    return (
-      <div className="min-h-[70vh] flex items-center justify-center p-4">
-        <Card className="w-full max-w-md p-8 space-y-6 text-center">
-          <h1 className="text-2xl font-bold font-heading">{t('cliAuth.deleteConsentTitle')}</h1>
-          <p className="text-muted-foreground">{t('cliAuth.deleteConsentDescription')}</p>
-          <Button className="w-full" onClick={() => setDeleteConfirmed(true)}>
-            {t('cliAuth.deleteConsentConfirm')}
-          </Button>
         </Card>
       </div>
     )

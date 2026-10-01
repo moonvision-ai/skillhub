@@ -13,10 +13,14 @@ import com.iflytek.skillhub.domain.security.SecurityScanner;
 import com.iflytek.skillhub.domain.skill.SkillVersion;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
 import com.iflytek.skillhub.domain.skill.SkillVersionStatus;
+import com.iflytek.skillhub.observability.MessageObservationSupport;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import com.iflytek.skillhub.storage.ObjectMetadata;
 import com.iflytek.skillhub.storage.ObjectStorageService;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RLock;
 import org.redisson.api.RStream;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.StreamMessageId;
@@ -32,6 +36,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class ScanTaskConsumerLoggingTest {
 
@@ -147,6 +152,15 @@ class ScanTaskConsumerLoggingTest {
         }
     }
 
+    private static RedissonClient redissonClientWithAvailableProcessingLock() {
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RLock processingLock = mock(RLock.class);
+        when(redissonClient.getLock(org.mockito.ArgumentMatchers.anyString())).thenReturn(processingLock);
+        when(processingLock.tryLock()).thenReturn(true);
+        when(processingLock.isHeldByCurrentThread()).thenReturn(true);
+        return redissonClient;
+    }
+
     private static final class TestableLoggingConsumer extends ScanTaskConsumer {
         private final RStream<String, String> stream = mock(RStream.class);
 
@@ -156,14 +170,15 @@ class ScanTaskConsumerLoggingTest {
                                         ScanTaskProducer scanTaskProducer,
                                         ObjectStorageService objectStorageService) {
             super(
-                    mock(RedissonClient.class),
+                    redissonClientWithAvailableProcessingLock(),
                     "skillhub:scan:requests",
                     "skillhub-scanners",
                     securityScanner,
                     securityScanService,
                     skillVersionRepository,
                     scanTaskProducer,
-                    objectStorageService
+                    objectStorageService,
+                    new MessageObservationSupport(ObservationRegistry.NOOP, new RequestIdAccessor())
             );
         }
 
@@ -205,8 +220,19 @@ class ScanTaskConsumerLoggingTest {
         }
 
         @Override
-        public void processScanResult(Long versionId, ScannerType scannerType, SecurityScanResponse response) {
+        public void processScanResult(String taskId,
+                                      Long versionId,
+                                      ScannerType scannerType,
+                                      SecurityScanResponse response) {
         }
+
+        @Override
+        public void processScanFailure(String taskId,
+                                       Long versionId,
+                                       ScannerType scannerType,
+                                       String reason) {
+        }
+
     }
 
     private static final class TestProducer implements ScanTaskProducer {
@@ -246,6 +272,11 @@ class ScanTaskConsumerLoggingTest {
 
         @Override
         public Optional<SkillVersion> findBySkillIdAndVersion(Long skillId, String version) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<SkillVersion> findBySkillIdForUpdate(Long skillId) {
             throw new UnsupportedOperationException();
         }
 

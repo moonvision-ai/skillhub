@@ -17,8 +17,10 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -38,7 +40,9 @@ class ApiTokenScopeFilterTest {
 
     @Test
     void shouldDenyApiTokenWithoutRequiredScope() throws Exception {
+        AtomicReference<Exception> deniedException = new AtomicReference<>();
         AccessDeniedHandler handler = (request, response, accessDeniedException) -> {
+            deniedException.set(accessDeniedException);
             response.sendError(HttpServletResponse.SC_FORBIDDEN, accessDeniedException.getMessage());
         };
         ApiTokenScopeFilter filter = new ApiTokenScopeFilter(scopeService, handler);
@@ -69,6 +73,12 @@ class ApiTokenScopeFilterTest {
 
         assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
         assertTrue(response.getErrorMessage().contains("Missing API token scope: skill:publish"));
+        ApiTokenAccessDeniedException exception = assertInstanceOf(
+                ApiTokenAccessDeniedException.class,
+                deniedException.get()
+        );
+        assertEquals("error.apiToken.scope.missing", exception.getMessageCode());
+        assertEquals("skill:publish", exception.getMessageArgs()[0]);
         verify(chain, never()).doFilter(request, response);
     }
 
@@ -169,5 +179,43 @@ class ApiTokenScopeFilterTest {
         assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
         assertTrue(response.getErrorMessage().contains("Missing API token scope: skill:publish"));
         verify(chain, never()).doFilter(request, response);
+    }
+
+    @Test
+    void shouldAuthorizeApplicationPathBehindForwardedPrefix() throws Exception {
+        AccessDeniedHandler handler = mock(AccessDeniedHandler.class);
+        ApiTokenScopeFilter filter = new ApiTokenScopeFilter(scopeService, handler);
+
+        PlatformPrincipal principal = new PlatformPrincipal(
+            "user-5",
+            "Erin",
+            "erin@example.com",
+            "",
+            "api_token",
+            Set.of("USER")
+        );
+        var authentication = new UsernamePasswordAuthenticationToken(
+            principal,
+            null,
+            List.of(
+                new SimpleGrantedAuthority("ROLE_USER"),
+                new SimpleGrantedAuthority("SCOPE_skill:read")
+            )
+        );
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        MockHttpServletRequest request = new MockHttpServletRequest(
+            "GET",
+            "/skillhub/api/cli/v1/namespaces/global/skills"
+        );
+        request.setContextPath("/skillhub");
+        request.setServletPath("/api/cli/v1/namespaces/global/skills");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        verify(chain).doFilter(request, response);
+        verify(handler, never()).handle(eq(request), eq(response), any());
     }
 }

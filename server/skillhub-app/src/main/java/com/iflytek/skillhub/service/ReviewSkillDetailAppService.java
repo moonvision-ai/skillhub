@@ -14,6 +14,7 @@ import com.iflytek.skillhub.domain.skill.SkillVersion;
 import com.iflytek.skillhub.domain.skill.service.SkillDownloadService;
 import com.iflytek.skillhub.domain.skill.service.SkillQueryService;
 import com.iflytek.skillhub.dto.ReviewSkillDetailResponse;
+import com.iflytek.skillhub.dto.PageResponse;
 import com.iflytek.skillhub.dto.SkillDetailResponse;
 import com.iflytek.skillhub.dto.SkillFileResponse;
 import com.iflytek.skillhub.dto.SkillLifecycleVersionResponse;
@@ -34,19 +35,22 @@ public class ReviewSkillDetailAppService {
     private final RbacService rbacService;
     private final SkillQueryService skillQueryService;
     private final SkillDownloadService skillDownloadService;
+    private final ComplianceSnapshotProjectionService complianceSnapshotProjectionService;
 
     public ReviewSkillDetailAppService(ReviewTaskRepository reviewTaskRepository,
                                        NamespaceRepository namespaceRepository,
                                        ReviewService reviewService,
                                        RbacService rbacService,
                                        SkillQueryService skillQueryService,
-                                       SkillDownloadService skillDownloadService) {
+                                       SkillDownloadService skillDownloadService,
+                                       ComplianceSnapshotProjectionService complianceSnapshotProjectionService) {
         this.reviewTaskRepository = reviewTaskRepository;
         this.namespaceRepository = namespaceRepository;
         this.reviewService = reviewService;
         this.rbacService = rbacService;
         this.skillQueryService = skillQueryService;
         this.skillDownloadService = skillDownloadService;
+        this.complianceSnapshotProjectionService = complianceSnapshotProjectionService;
     }
 
     public ReviewSkillDetailResponse getReviewSkillDetail(Long reviewId,
@@ -81,7 +85,9 @@ public class ReviewSkillDetailAppService {
                 snapshot.publishedVersion() != null ? toLifecycleVersion(snapshot.publishedVersion()) : null,
                 toLifecycleVersion(snapshot.activeVersion()),
                 null,
-                "REVIEW_TASK"
+                "REVIEW_TASK",
+                List.of(),
+                new PageResponse<>(List.of(), 0, 0, 20)
         );
 
         List<SkillVersionResponse> versions = snapshot.versions().stream()
@@ -94,7 +100,8 @@ public class ReviewSkillDetailAppService {
                         version.getTotalSize(),
                         version.getPublishedAt(),
                         version.getId().equals(snapshot.activeVersion().getId())
-                                || skillQueryService.isDownloadAvailable(version)
+                                || skillQueryService.isDownloadAvailable(version),
+                        complianceSnapshotProjectionService.fromParsedMetadataJson(version.getParsedMetadataJson())
                 ))
                 .toList();
 

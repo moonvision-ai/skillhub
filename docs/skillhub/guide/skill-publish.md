@@ -49,23 +49,43 @@ SkillHub 提供了类似 npm 的发布体验，但增加了企业级的权限控
 
 1. **准备技能包**
 
-确保技能包符合 SkillHub 规范：
-- 包含 `skill.md`（技能描述）
-- 包含 `package.json` 或 `SKILL.md`（元数据）
-- 文件结构清晰，无敏感信息
+准备一个根目录包含 `SKILL.md` 的技能目录：
+
+- 在 `SKILL.md` 中同时编写 YAML frontmatter 和技能指令。
+- frontmatter 必须包含 `name` 和 `description`；需要指定版本时，在其中设置 `version`。
+- `package.json` 不会提供或替代这些技能元数据。
+- 保持文件结构清晰，不包含敏感信息。
+
+例如，将以下内容保存为 `my-skill/SKILL.md`：
+
+```markdown
+---
+name: my-skill
+description: Summarize a short text as numbered steps.
+version: 1.0.0
+---
+
+Summarize the supplied text as numbered steps.
+```
+
+打包已有技能时，应一并保留其所需的脚本、参考文件、`agents/` 元数据和许可证文件。
+下一步发布命令的路径应指向该技能目录（本例为 `./my-skill`）。
 
 2. **使用 CLI 发布（推荐）**
 
 ```bash
-# 配置注册中心
-export CLAWHUB_REGISTRY=http://localhost:8080
+# 配置 SkillHub 注册中心
+export SKILLHUB_REGISTRY=http://localhost:8080
+export SKILLHUB_TOKEN=YOUR_API_TOKEN
 
 # 发布到默认命名空间
-npx clawhub publish ./my-skill
+npx @astron-team/skillhub@latest publish ./my-skill
 
 # 发布到指定命名空间
-npx clawhub publish ./my-skill --namespace my-team
+npx @astron-team/skillhub@latest publish ./my-skill --namespace my-team
 ```
+
+> ClawHub CLI 的发布与同步协议与 SkillHub 不兼容。发布请使用上面的 SkillHub CLI。
 
 3. **使用 Web UI 发布**
 
@@ -94,6 +114,45 @@ visibility: PUBLIC
 7. **发布成功**
 
 技能包可以通过搜索发现，其他人可以通过 CLI 或 Web UI 下载使用。
+
+## 合规声明
+
+技能作者可以在 `SKILL.md` frontmatter 中添加 `x-astron-compliance`，声明该技能版本与某些合规标准、控制项或安全知识库条目的映射关系。
+
+```yaml
+---
+name: incident-response-helper
+description: Helps analysts draft incident response steps.
+x-astron-compliance:
+  - standard: mitre-attack
+    version: "v19.1"
+    controlId: T1059
+    title: Command and Scripting Interpreter
+    evidence:
+      - type: packaged-file
+        path: references/mitre-t1059.md
+      - type: external-url
+        url: https://attack.mitre.org/techniques/T1059/
+---
+```
+
+需要注意：
+
+- 这是“作者声明”，不是 SkillHub 或第三方机构的合规认证。
+- SkillHub 会校验字段结构、重复项、包内证据路径和外部 URL 格式。
+- 发布成功后，声明会被固化为当前版本的 `complianceSnapshot`，并生成稳定摘要 `digest`。
+- 后续版本如果新增、删除或修改合规声明，审核页会展示差异。
+- 搜索 `mitre-attack`、`T1059` 或声明标题时，可以命中对应技能。
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `standard` | 是 | 标准或框架标识，例如 `mitre-attack`、`nist-csf`、`soc2` |
+| `version` | 是 | 标准版本 |
+| `controlId` | 是 | 控制项、技术编号或条款 ID |
+| `title` | 否 | 控制项名称，建议填写，便于审核和搜索 |
+| `evidence` | 否 | 证据列表，支持包内文件和外部 URL |
 
 ## API 接口
 

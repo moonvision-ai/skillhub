@@ -1,6 +1,7 @@
 package com.iflytek.skillhub.service;
 
 import com.iflytek.skillhub.auth.rbac.RbacService;
+import com.iflytek.skillhub.domain.audit.AuditDetail;
 import com.iflytek.skillhub.domain.audit.AuditLogService;
 import com.iflytek.skillhub.domain.label.LabelDefinition;
 import com.iflytek.skillhub.domain.label.LabelDefinitionService;
@@ -18,12 +19,12 @@ import com.iflytek.skillhub.domain.skill.VisibilityChecker;
 import com.iflytek.skillhub.domain.skill.service.SkillSlugResolutionService;
 import com.iflytek.skillhub.dto.MessageResponse;
 import com.iflytek.skillhub.dto.SkillLabelDto;
+import com.iflytek.skillhub.observability.RequestIdAccessor;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -42,6 +43,7 @@ public class SkillLabelAppService {
     private final AuditLogService auditLogService;
     private final LabelSearchSyncService labelSearchSyncService;
     private final SkillSlugResolutionService skillSlugResolutionService;
+    private final RequestIdAccessor requestIdAccessor;
 
     public SkillLabelAppService(NamespaceRepository namespaceRepository,
                                 SkillRepository skillRepository,
@@ -52,7 +54,8 @@ public class SkillLabelAppService {
                                 RbacService rbacService,
                                 AuditLogService auditLogService,
                                 LabelSearchSyncService labelSearchSyncService,
-                                SkillSlugResolutionService skillSlugResolutionService) {
+                                SkillSlugResolutionService skillSlugResolutionService,
+                                RequestIdAccessor requestIdAccessor) {
         this.namespaceRepository = namespaceRepository;
         this.skillRepository = skillRepository;
         this.visibilityChecker = visibilityChecker;
@@ -63,6 +66,7 @@ public class SkillLabelAppService {
         this.auditLogService = auditLogService;
         this.labelSearchSyncService = labelSearchSyncService;
         this.skillSlugResolutionService = skillSlugResolutionService;
+        this.requestIdAccessor = requestIdAccessor;
     }
 
     public List<SkillLabelDto> listSkillLabels(String namespaceSlug,
@@ -93,7 +97,7 @@ public class SkillLabelAppService {
                 platformRoles(userId)
         );
         afterCommit(() -> labelSearchSyncService.rebuildSkill(skill.getId()));
-        recordAudit("SKILL_LABEL_ATTACH", userId, skill.getId(), auditContext, "{\"labelSlug\":\"" + labelSlug + "\"}");
+        recordAudit("SKILL_LABEL_ATTACH", userId, skill.getId(), auditContext, AuditDetail.of("labelSlug", labelSlug));
         return toDtos(List.of(attached)).getFirst();
     }
 
@@ -113,7 +117,7 @@ public class SkillLabelAppService {
                 platformRoles(userId)
         );
         afterCommit(() -> labelSearchSyncService.rebuildSkill(skill.getId()));
-        recordAudit("SKILL_LABEL_DETACH", userId, skill.getId(), auditContext, "{\"labelSlug\":\"" + labelSlug + "\"}");
+        recordAudit("SKILL_LABEL_DETACH", userId, skill.getId(), auditContext, AuditDetail.of("labelSlug", labelSlug));
         return new MessageResponse("Label detached");
     }
 
@@ -188,7 +192,7 @@ public class SkillLabelAppService {
                 action,
                 "SKILL",
                 targetId,
-                MDC.get("requestId"),
+                requestIdAccessor.current(),
                 auditContext != null ? auditContext.clientIp() : null,
                 auditContext != null ? auditContext.userAgent() : null,
                 detailJson

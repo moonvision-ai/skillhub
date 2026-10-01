@@ -1,4 +1,5 @@
 import createClient from 'openapi-fetch'
+import { BASE_PATH } from '@/shared/lib/base-path'
 import type { paths } from './generated/schema'
 import type {
   ChangePasswordRequest,
@@ -14,6 +15,7 @@ import type {
   MergeInitiateResponse,
   MergeVerifyRequest,
   ReviewSkillDetail,
+  ReviewProgressPage,
   ReviewTask,
   PromotionSortBy,
   PromotionSortDirection,
@@ -32,6 +34,8 @@ import type {
   OAuthProvider,
   User,
   ManagedNamespace,
+  AdminNamespace,
+  AdminNamespaceList,
   Namespace,
   CreateNamespaceRequest,
   NamespaceMember,
@@ -44,6 +48,8 @@ import type {
   LabelDefinition,
   LabelItem,
   BatchMemberResponse,
+  SkillSuite,
+  SkillSuiteDraftInput,
 } from './types'
 import { ApiError } from '@/shared/lib/api-error'
 import i18n from '@/i18n/config'
@@ -82,7 +88,20 @@ function getRuntimeConfig(): RuntimeConfig {
 }
 
 function getApiBaseUrl(): string {
-  return getRuntimeConfig().apiBaseUrl ?? ''
+  const configured = getRuntimeConfig().apiBaseUrl
+  if (configured) {
+    return configured
+  }
+  // Default the API prefix to the deployment base path so that setting only
+  // SKILLHUB_WEB_BASE_PATH (e.g. /skillhub/) still routes API calls to
+  // /skillhub/api/... instead of /api/... behind a sub-path-only reverse proxy.
+  // BASE_PATH is import.meta.env.BASE_URL (substituted at container start) and
+  // always ends with '/'; drop it so requests are /skillhub/api, not /skillhub//api.
+  return BASE_PATH === '/' ? '' : BASE_PATH.replace(/\/+$/, '')
+}
+
+export function getAppBaseUrl(): string {
+  return getRuntimeConfig().appBaseUrl ?? ''
 }
 
 function parseBooleanFlag(value: string | undefined): boolean {
@@ -130,6 +149,19 @@ async function ensureCsrfHeaders(headers?: HeadersInit): Promise<HeadersInit> {
 
 function isApiEnvelope<T>(value: unknown): value is ApiEnvelope<T> {
   return typeof value === 'object' && value !== null && 'code' in value && 'msg' in value && 'data' in value
+}
+
+function unwrapOpenApiResponse<T>(data: unknown, error: unknown, response: Response): T {
+  const envelope = isApiEnvelope<T>(data)
+    ? data
+    : isApiEnvelope<T>(error)
+      ? error
+      : null
+  if (!response.ok || error || !envelope || envelope.code !== 0) {
+    const message = envelope?.msg || `HTTP ${response.status}`
+    throw new ApiError(message, response.status, envelope?.msg, envelope?.msg)
+  }
+  return envelope.data
 }
 
 export function getCsrfHeaders(headers?: HeadersInit): HeadersInit {
@@ -381,7 +413,7 @@ export const authApi = {
   },
 
   async logout(): Promise<void> {
-    const response = await fetch('/api/v1/auth/logout', {
+    const response = await fetch(buildApiUrl('/api/v1/auth/logout'), {
       method: 'POST',
       headers: withCsrf(),
     })
@@ -564,6 +596,27 @@ export const labelApi = {
     })
   },
 
+  async listSuiteLabels(namespace: string, slug: string): Promise<LabelItem[]> {
+    const cleanNamespace = normalizeNamespaceSlug(namespace)
+    return fetchJson<LabelItem[]>(`${WEB_API_PREFIX}/suites/${cleanNamespace}/${encodeURIComponent(slug)}/labels`)
+  },
+
+  async attachSuiteLabel(namespace: string, slug: string, labelSlug: string): Promise<LabelItem> {
+    const cleanNamespace = normalizeNamespaceSlug(namespace)
+    return fetchJson<LabelItem>(`${WEB_API_PREFIX}/suites/${cleanNamespace}/${encodeURIComponent(slug)}/labels/${encodeURIComponent(labelSlug)}`, {
+      method: 'PUT',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
+  async detachSuiteLabel(namespace: string, slug: string, labelSlug: string): Promise<void> {
+    const cleanNamespace = normalizeNamespaceSlug(namespace)
+    await fetchJson<void>(`${WEB_API_PREFIX}/suites/${cleanNamespace}/${encodeURIComponent(slug)}/labels/${encodeURIComponent(labelSlug)}`, {
+      method: 'DELETE',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
   async listAdminDefinitions(): Promise<LabelDefinition[]> {
     return fetchJson<LabelDefinition[]>('/api/v1/admin/labels')
   },
@@ -641,6 +694,13 @@ export const namespaceApi = {
 
   async listMine(): Promise<ManagedNamespace[]> {
     return fetchJson<ManagedNamespace[]>(`${WEB_API_PREFIX}/me/namespaces`)
+  },
+
+  async listMinePage(params?: { page?: number; size?: number }): Promise<PagedResponse<ManagedNamespace>> {
+    const searchParams = new URLSearchParams()
+    searchParams.set('page', String(params?.page ?? 0))
+    searchParams.set('size', String(params?.size ?? 10))
+    return fetchJson<PagedResponse<ManagedNamespace>>(`${WEB_API_PREFIX}/me/namespaces/page?${searchParams.toString()}`)
   },
 
   async getDetail(slug: string): Promise<Namespace> {
@@ -847,6 +907,68 @@ export const tokenApi = {
   },
 }
 
+export const suiteApi = {
+  async createVersion(suiteId: number, input: SkillSuiteDraftInput): Promise<SkillSuite> {
+    const { data, error, response } = await client.POST('/api/web/suites/{suiteId}/versions', {
+      params: { path: { suiteId } },
+      body: input,
+      headers: await ensureCsrfHeaders(),
+    })
+    return unwrapOpenApiResponse<SkillSuite>(data, error, response)
+  },
+
+  async reopen(suiteId: number, versionId: number): Promise<void> {
+    const { data, error, response } = await client.POST('/api/web/suites/{suiteId}/versions/{versionId}/reopen', {
+      params: { path: { suiteId, versionId } },
+      headers: await ensureCsrfHeaders(),
+    })
+    unwrapOpenApiResponse(data, error, response)
+  },
+
+  async yank(suiteId: number, versionId: number, reason: string): Promise<void> {
+    const { data, error, response } = await client.POST('/api/web/suites/{suiteId}/versions/{versionId}/yank', {
+      params: { path: { suiteId, versionId } },
+      body: { reason },
+      headers: await ensureCsrfHeaders(),
+    })
+    unwrapOpenApiResponse(data, error, response)
+  },
+
+  async setHidden(suiteId: number, hidden: boolean): Promise<void> {
+    const result = hidden
+      ? await client.POST('/api/web/suites/{suiteId}/hide', {
+        params: { path: { suiteId } },
+        headers: await ensureCsrfHeaders(),
+      })
+      : await client.POST('/api/web/suites/{suiteId}/restore', {
+        params: { path: { suiteId } },
+        headers: await ensureCsrfHeaders(),
+      })
+    unwrapOpenApiResponse(result.data, result.error, result.response)
+  },
+
+  async setArchived(suiteId: number, archived: boolean): Promise<void> {
+    const result = archived
+      ? await client.POST('/api/web/suites/{suiteId}/archive', {
+        params: { path: { suiteId } },
+        headers: await ensureCsrfHeaders(),
+      })
+      : await client.POST('/api/web/suites/{suiteId}/unarchive', {
+        params: { path: { suiteId } },
+        headers: await ensureCsrfHeaders(),
+      })
+    unwrapOpenApiResponse(result.data, result.error, result.response)
+  },
+
+  async delete(suiteId: number): Promise<void> {
+    const { data, error, response } = await client.DELETE('/api/web/suites/{suiteId}', {
+      params: { path: { suiteId } },
+      headers: await ensureCsrfHeaders(),
+    })
+    unwrapOpenApiResponse(data, error, response)
+  },
+}
+
 export const reviewApi = {
   async list(params: { status: string; namespaceId?: number; page?: number; size?: number; sortDirection?: 'ASC' | 'DESC' }) {
     const searchParams = new URLSearchParams()
@@ -864,6 +986,26 @@ export const reviewApi = {
 
   async get(id: number): Promise<ReviewTask> {
     return fetchJson<ReviewTask>(`${WEB_API_PREFIX}/reviews/${id}`)
+  },
+
+  async listMyProgress(params: { subjectType?: string; status?: string; q?: string; page?: number; size?: number }) {
+    const searchParams = new URLSearchParams()
+    if (params.subjectType) searchParams.set('subjectType', params.subjectType)
+    if (params.status) searchParams.set('status', params.status)
+    if (params.q) searchParams.set('q', params.q)
+    searchParams.set('page', String(params.page ?? 0))
+    searchParams.set('size', String(params.size ?? 20))
+    return fetchJson<ReviewProgressPage>(
+      `${WEB_API_PREFIX}/reviews/my-progress?${searchParams.toString()}`,
+    )
+  },
+
+  async listMyAttempts(reviewTaskId: number): Promise<ReviewTask[]> {
+    return fetchJson<ReviewTask[]>(`${WEB_API_PREFIX}/reviews/my-progress/${reviewTaskId}/attempts`)
+  },
+
+  async listAttempts(reviewTaskId: number): Promise<ReviewTask[]> {
+    return fetchJson<ReviewTask[]>(`${WEB_API_PREFIX}/reviews/${reviewTaskId}/attempts`)
   },
 
   async getSkillDetail(id: number): Promise<ReviewSkillDetail> {
@@ -1129,6 +1271,126 @@ export const profileApi = {
 }
 
 export const adminApi = {
+  async getNamespaces(params: { keyword?: string; status?: string; type?: string; page?: number; size?: number }): Promise<AdminNamespaceList> {
+    const searchParams = new URLSearchParams()
+    if (params.keyword) searchParams.set('keyword', params.keyword)
+    if (params.status) searchParams.set('status', params.status)
+    if (params.type) searchParams.set('type', params.type)
+    searchParams.set('page', String(params.page ?? 0))
+    searchParams.set('size', String(params.size ?? 20))
+    return fetchJson<AdminNamespaceList>(`/api/v1/admin/namespaces?${searchParams.toString()}`)
+  },
+
+  async getNamespace(slug: string): Promise<AdminNamespace> {
+    return fetchJson<AdminNamespace>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}`)
+  },
+
+  async getNamespaceMembers(slug: string, params?: { page?: number; size?: number }): Promise<PagedResponse<NamespaceMember>> {
+    const searchParams = new URLSearchParams()
+    searchParams.set('page', String(params?.page ?? 0))
+    searchParams.set('size', String(params?.size ?? 20))
+    return fetchJson<PagedResponse<NamespaceMember>>(
+      `/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/members?${searchParams.toString()}`,
+    )
+  },
+
+  async searchNamespaceMemberCandidates(slug: string, search: string, size = 10): Promise<NamespaceCandidateUser[]> {
+    const searchParams = new URLSearchParams({
+      search: search.trim(),
+      size: String(size),
+    })
+    return fetchJson<NamespaceCandidateUser[]>(
+      `/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/member-candidates?${searchParams.toString()}`,
+    )
+  },
+
+  async addNamespaceMember(slug: string, request: { userId: string; role: string }): Promise<NamespaceMember> {
+    return fetchJson<NamespaceMember>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/members`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({
+        userId: request.userId.trim(),
+        role: request.role,
+      }),
+    })
+  },
+
+  async batchAddNamespaceMembers(slug: string, members: Array<{ userId: string; role: string }>): Promise<BatchMemberResponse> {
+    return fetchJson<BatchMemberResponse>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/members/batch`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ members }),
+    })
+  },
+
+  async updateNamespaceMemberRole(slug: string, userId: string, role: string): Promise<NamespaceMember> {
+    return fetchJson<NamespaceMember>(
+      `/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/members/${encodeURIComponent(userId)}/role`,
+      {
+        method: 'PUT',
+        headers: await ensureCsrfHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({ role }),
+      },
+    )
+  },
+
+  async removeNamespaceMember(slug: string, userId: string): Promise<void> {
+    await fetchJson<void>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/members/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
+  async transferNamespaceOwnership(slug: string, newOwnerUserId: string): Promise<void> {
+    await fetchJson<void>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/transfer-ownership`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ newOwnerId: newOwnerUserId.trim() }),
+    })
+  },
+
+  async freezeNamespace(slug: string, reason?: string): Promise<AdminNamespace> {
+    return fetchJson<AdminNamespace>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/freeze`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify(reason?.trim() ? { reason: reason.trim() } : {}),
+    })
+  },
+
+  async unfreezeNamespace(slug: string): Promise<AdminNamespace> {
+    return fetchJson<AdminNamespace>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/unfreeze`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
+  async archiveNamespace(slug: string, reason?: string): Promise<AdminNamespace> {
+    return fetchJson<AdminNamespace>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/archive`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify(reason?.trim() ? { reason: reason.trim() } : {}),
+    })
+  },
+
+  async restoreNamespace(slug: string): Promise<AdminNamespace> {
+    return fetchJson<AdminNamespace>(`/api/v1/admin/namespaces/${normalizeNamespaceSlug(slug)}/restore`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
   async getUsers(params: { search?: string; status?: string; page?: number; size?: number }) {
     const searchParams = new URLSearchParams()
     if (params.search) searchParams.set('search', params.search)

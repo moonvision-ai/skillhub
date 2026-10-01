@@ -4,6 +4,7 @@ import { Check, Copy } from 'lucide-react'
 import { Button } from '@/shared/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui/tabs'
 import { useCopyToClipboard } from '@/shared/lib/clipboard'
+import { resolvePublicRegistryUrl } from '@/shared/lib/registry-url'
 
 interface InstallCommandProps {
   namespace: string
@@ -15,18 +16,24 @@ export function buildInstallTarget(namespace: string, slug: string): string {
   return namespace === 'global' ? slug : `${namespace}--${slug}`
 }
 
+export function buildSkillhubCoordinate(namespace: string, slug: string): string {
+  return `@${namespace}/${slug}`
+}
+
+/** Restrict copied commands to version tokens that are safe across common shells. */
+export function isPortableSkillVersion(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(value)
+}
+
 export function getBaseUrl(): string {
   if (typeof window === 'undefined') {
     return ''
   }
   const runtimeConfig = window.__SKILLHUB_RUNTIME_CONFIG__
-  const configuredUrl = runtimeConfig?.appBaseUrl
-  // Use configured URL only if it's set and not localhost
-  if (configuredUrl && !configuredUrl.includes('localhost')) {
-    return configuredUrl
-  }
-  // Fallback to current page origin
-  return `${window.location.protocol}//${window.location.host}`
+  return resolvePublicRegistryUrl(
+    runtimeConfig?.appBaseUrl,
+    `${window.location.protocol}//${window.location.host}`,
+  )
 }
 
 export function buildInstallCommand(namespace: string, slug: string, baseUrl: string): string {
@@ -34,9 +41,18 @@ export function buildInstallCommand(namespace: string, slug: string, baseUrl: st
   return `npx clawhub install ${installTarget} --registry ${baseUrl}`
 }
 
-export function buildSkillhubInstallCommand(namespace: string, slug: string, baseUrl: string): string {
-  const namespaceArg = namespace === 'global' ? '' : ` --namespace ${namespace}`
-  return `npx @astron-team/skillhub@latest install ${slug}${namespaceArg} --registry ${baseUrl}`
+export function buildSkillhubInstallCommand(
+  namespace: string,
+  slug: string,
+  baseUrl: string,
+  version?: string,
+): string {
+  if (version && !isPortableSkillVersion(version)) {
+    return ''
+  }
+  const coordinate = buildSkillhubCoordinate(namespace, slug)
+  const versionArg = version ? ` --version ${version}` : ''
+  return `npx @astron-team/skillhub@latest install ${coordinate}${versionArg} --registry ${baseUrl}`
 }
 
 interface CommandBlockProps {
@@ -80,27 +96,32 @@ function CommandBlock({ command }: CommandBlockProps) {
   )
 }
 
-export function InstallCommand({ namespace, slug }: InstallCommandProps) {
+export function InstallCommand({ namespace, slug, version }: InstallCommandProps) {
   const { t } = useTranslation()
   const baseUrl = useMemo(() => getBaseUrl(), [])
   const clawhubCommand = useMemo(() => buildInstallCommand(namespace, slug, baseUrl), [baseUrl, namespace, slug])
-  const skillhubCommand = useMemo(() => buildSkillhubInstallCommand(namespace, slug, baseUrl), [baseUrl, namespace, slug])
+  const skillhubCommand = useMemo(
+    () => buildSkillhubInstallCommand(namespace, slug, baseUrl, version),
+    [baseUrl, namespace, slug, version],
+  )
 
   return (
-    <Tabs defaultValue="clawhub" className="space-y-3">
+    <Tabs defaultValue="skillhub" className="space-y-3">
       <TabsList className="w-full gap-6 border-border/70 bg-transparent p-0 text-xs">
-        <TabsTrigger value="clawhub" className={installMethodTabTriggerClass}>
-          {t('skillDetail.installMethodClawhub')}
-        </TabsTrigger>
         <TabsTrigger value="skillhub" className={installMethodTabTriggerClass}>
           {t('skillDetail.installMethodSkillhub')}
         </TabsTrigger>
+        <TabsTrigger value="clawhub" className={installMethodTabTriggerClass}>
+          {t('skillDetail.installMethodClawhub')}
+        </TabsTrigger>
       </TabsList>
+      <TabsContent value="skillhub">
+        {skillhubCommand
+          ? <CommandBlock command={skillhubCommand} />
+          : <p role="alert" className="text-sm text-destructive">{t('skillDetail.installCommandUnsafeVersion')}</p>}
+      </TabsContent>
       <TabsContent value="clawhub">
         <CommandBlock command={clawhubCommand} />
-      </TabsContent>
-      <TabsContent value="skillhub">
-        <CommandBlock command={skillhubCommand} />
       </TabsContent>
     </Tabs>
   )
