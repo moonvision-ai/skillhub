@@ -222,6 +222,34 @@ docker compose --env-file .env.release -f compose.release.yml up -d --force-recr
 6. 同时发布多架构 manifest：`server` / `web` 覆盖 `linux/amd64`、`linux/arm64` 与
    `linux/riscv64`，`scanner` 暂保持 `linux/amd64` 与 `linux/arm64`
 
+### 6.1 Woodpecker 自动发布到阿里云 ACR
+
+仓库工作流为 `.woodpecker/publish-images.yaml`。`moonvision-ai/skillhub` 的 `main`
+分支发生 push 时，Woodpecker 依次构建 `server/Dockerfile` 和 `web/Dockerfile`，
+并推送 `linux/amd64` 镜像到：
+
+- `registry.cn-beijing.aliyuncs.com/moonvision/skillhub-server:latest`
+- `registry.cn-beijing.aliyuncs.com/moonvision/skillhub-web:latest`
+
+PR、其他分支和手动触发不会改写这两个 `latest` 标签。该流程只发布镜像，
+不自动更新生产容器。GitHub Actions 的 GHCR 发布流程保持独立。
+
+启用前需在 Woodpecker 中完成以下配置：
+
+1. 在现有 Woodpecker 实例核实并启用 GitHub forge，激活 `moonvision-ai/skillhub`
+   仓库及其 push webhook。基础设施仓库中的 Compose 只配置了 Codeup forge；
+   仅添加本仓库的工作流文件无法保证收到 GitHub 事件。
+2. 给该仓库设置 `acr_username` 和 `acr_password` 两个 Woodpecker Secrets，
+   分别对应有 `moonvision` 命名空间推送权限的 ACR 用户名和密码；仅对 push
+   事件和 `woodpeckerci/plugin-docker-buildx:5.0.0` 插件开放。
+3. 确认 Woodpecker 管理端允许该固定版本插件运行 privileged 模式，并为构建
+   工作流分配 `linux/amd64` Agent。当前公司 Woodpecker Compose 已配置该插件。
+
+配置可先用 `woodpecker-cli lint --strict --plugins-privileged
+woodpeckerci/plugin-docker-buildx:5.0.0 .woodpecker/publish-images.yaml` 检查。
+首次 `main` push 后，还应在 Woodpecker 查看两步构建与推送结果，并核对 ACR
+中两个 `latest` manifest 的 digest；工作流文件通过本地 lint 不代表远端已启用。
+
 ## 7 配置管理
 
 ### 7.1 请求限流配置

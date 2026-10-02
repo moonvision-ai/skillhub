@@ -1,0 +1,35 @@
+when:
+  - event: push
+    repo: moonvision-ai/skillhub
+    branch: main
+
+steps:
+  - name: publish-server
+    image: woodpeckerci/plugin-docker-buildx:5.0.0
+    privileged: true
+    settings:
+      registry: registry.cn-beijing.aliyuncs.com
+      repo: registry.cn-beijing.aliyuncs.com/moonvision/skillhub-server
+      dockerfile: server/Dockerfile
+      context: server
+      platforms: linux/amd64
+      tags: latest
+      username:
+        from_secret: acr_username
+      password:
+        from_secret: acr_password
+
+  - name: publish-web
+    image: woodpeckerci/plugin-docker-buildx:5.0.0
+    privileged: true
+    settings:
+      registry: registry.cn-beijing.aliyuncs.com
+      repo: registry.cn-beijing.aliyuncs.com/moonvision/skillhub-web
+      dockerfile: web/Dockerfile
+      context: web
+      platforms: linux/amd64
+      tags: latest
+      username:
+        from_secret: acr_username
+      password:
+        from_secret: acr_password
