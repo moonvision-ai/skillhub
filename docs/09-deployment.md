@@ -224,7 +224,7 @@ docker compose --env-file .env.release -f compose.release.yml up -d --force-recr
 
 ### 6.1 Woodpecker 自动发布到阿里云 ACR
 
-仓库工作流为 `.woodpecker/publish-images.yaml`。`moonvision-ai/skillhub` 的 `main`
+仓库工作流为 `.woodpecker/deploy.yaml`。`moonvision-ai/skillhub` 的 `main`
 分支发生 push 时，Woodpecker 依次构建 `server/Dockerfile` 和 `web/Dockerfile`，
 并推送 `linux/amd64` 镜像到：
 
@@ -246,7 +246,7 @@ PR、其他分支和手动触发不会改写这两个 `latest` 标签。该流�
    工作流分配 `linux/amd64` Agent。当前公司 Woodpecker Compose 已配置该插件。
 
 配置可先用 `woodpecker-cli lint --strict --plugins-privileged
-woodpeckerci/plugin-docker-buildx:5.0.0 .woodpecker/publish-images.yaml` 检查。
+woodpeckerci/plugin-docker-buildx:5.0.0 .woodpecker/deploy.yaml` 检查。
 首次 `main` push 后，还应在 Woodpecker 查看两步构建与推送结果，并核对 ACR
 中两个 `latest` manifest 的 digest；工作流文件通过本地 lint 不代表远端已启用。
 
